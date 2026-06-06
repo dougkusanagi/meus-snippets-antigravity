@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>guepardosys-snip — Snippet Manager</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="styles/main.css" />
+  </head>
+
+  <body>
+    <div id="app">
+      <!-- ===== Sidebar ===== -->
+      <aside class="sidebar">
+        <div class="sidebar-header">
+          <div class="logo-subtitle">Macro Expander</div>
+          <h1>guepardosys-snip</h1>
+          <div class="search-wrapper">
+            <span class="search-icon">🔍</span>
+            <input
+              type="text"
+              id="sidebar-search"
+              class="search-input"
+              placeholder="Buscar snippets..."
+              autocomplete="off"
+              spellcheck="false"
+            />
+          </div>
+        </div>
+
+        <div id="snippet-list" class="snippet-list scroller">
+          <div class="snippet-list-empty">
+            <div class="empty-icon">📋</div>
+            Nenhum snippet ainda.<br>Crie o primeiro!
+          </div>
+        </div>
+
+        <div class="sidebar-footer">
+          <button id="btn-new-snippet" class="btn-new-snippet" type="button">
+            <span>＋</span> Novo Snippet
+          </button>
+          <button id="btn-settings" class="btn-settings" type="button" title="Configurações">
+            ⚙️
+          </button>
+        </div>
+      </aside>
+
+      <!-- ===== Main Panel ===== -->
+      <main class="main-panel">
+        <!-- Platform Permission Banner -->
+        <div id="permission-banner" class="permission-banner" style="display: none;">
+          <div class="banner-content">
+            <span class="banner-icon">⚠️</span>
+            <div class="banner-text">
+              <h4 id="banner-title">Permissão Necessária</h4>
+              <p id="banner-description">Para simular digitação e usar atalhos globais, são necessárias permissões do sistema.</p>
+            </div>
+            <div class="banner-actions">
+              <button id="btn-open-settings" class="btn btn-secondary btn-sm" type="button">⚙️ Configurar</button>
+              <button id="btn-close-banner" class="btn-close-banner" type="button" aria-label="Fechar aviso">×</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Empty state (shown when no snippet selected) -->
+        <div id="empty-state" class="empty-state">
+          <div class="empty-state-icon">⌨️</div>
+          <h2>Selecione ou crie um snippet</h2>
+          <p>Escolha um snippet na lista ao lado para editar, ou clique em "Novo Snippet" para criar um.</p>
+        </div>
+
+        <!-- Editor panel (hidden until snippet selected) -->
+        <div id="editor-panel" class="editor-panel scroller">
+          <div class="editor-header">
+            <h2 id="editor-title">Editar Snippet</h2>
+            <div class="editor-actions">
+              <button id="btn-delete" class="btn btn-danger" type="button" style="display: none;">
+                🗑 Remover
+              </button>
+              <button id="btn-save" class="btn btn-primary" type="button">
+                💾 Salvar
+              </button>
+            </div>
+          </div>
+
+          <!-- Trigger -->
+          <div class="form-group">
+            <label for="input-trigger">Gatilho</label>
+            <input
+              type="text"
+              id="input-trigger"
+              class="form-input trigger-input"
+              placeholder="/meu-comando"
+              autocomplete="off"
+              spellcheck="false"
+            />
+          </div>
+
+          <!-- Name -->
+          <div class="form-group">
+            <label for="input-name">Nome</label>
+            <input
+              type="text"
+              id="input-name"
+              class="form-input"
+              placeholder="Nome descritivo do snippet"
+              autocomplete="off"
+              spellcheck="false"
+            />
+          </div>
+
+          <!-- Macro Editor -->
+          <div class="macro-editor-container">
+            <label class="macro-editor-label">Ações (Macro)</label>
+            <div id="macro-editor-container"></div>
+          </div>
+        </div>
+
+        <!-- Settings panel (hidden until settings button clicked) -->
+        <div id="settings-panel" class="editor-panel scroller">
+          <div class="editor-header">
+            <h2>Configurações do Aplicativo</h2>
+          </div>
+
+          <!-- Global Shortcut Configuration -->
+          <div class="form-group">
+            <label for="input-shortcut">Atalho Global do Spotlight</label>
+            <div class="shortcut-recorder-wrapper">
+              <input
+                type="text"
+                id="input-shortcut"
+                class="form-input shortcut-recorder"
+                placeholder="Clique aqui e pressione as teclas..."
+                readonly
+                autocomplete="off"
+                spellcheck="false"
+              />
+              <button id="btn-reset-shortcut" class="btn btn-secondary btn-sm" type="button">Restaurar Padrão</button>
+            </div>
+            <p class="form-help-text">Clique no campo acima e pressione a combinação de teclas desejada (ex: Ctrl+Espaço, Alt+S, etc.).</p>
+          </div>
+        </div>
+      </main>
+    </div>
+
+    <div id="toast-container" class="toast-container"></div>
+
+    <script src="scripts/macro-editor.js"></script>
+    <script src="scripts/manager.js"></script>
+  </body>
+</html>

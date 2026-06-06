@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>guepardosys-snip — Picker</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="styles/picker.css" />
+  </head>
+
+  <body>
+    <div class="picker">
+      <!-- Search -->
+      <div class="picker-search-wrapper">
+        <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="11" cy="11" r="8"></circle>
+          <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+        </svg>
+        <input
+          type="text"
+          id="picker-search"
+          class="picker-search"
+          placeholder="Buscar snippet..."
+          autocomplete="off"
+          spellcheck="false"
+        />
+      </div>
+
+      <!-- List -->
+      <div id="picker-list" class="picker-list">
+        <div class="picker-empty">Carregando...</div>
+      </div>
+
+      <!-- Footer hints -->
+      <div class="picker-footer">
+        <span><kbd>↑</kbd><kbd>↓</kbd> navegar</span>
+        <span><kbd>⏎</kbd> selecionar</span>
+        <span><kbd>Esc</kbd> fechar</span>
+      </div>
+    </div>
+
+    <script src="scripts/picker.js"></script>
+  </body>
+</html>
