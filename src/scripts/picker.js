@@ -11,9 +11,12 @@
   let selectedIndex = 0;
   let isMac = false;
 
-  // ---- DOM refs ----
-  const searchInput = () => document.getElementById('picker-search');
-  const listEl = () => document.getElementById('picker-list');
+  // ---- DOM Elements ----
+  const search = document.getElementById('picker-search');
+  const list = document.getElementById('picker-list');
+  const pickerContainer = document.querySelector('.picker');
+
+
 
   // ---- Tauri API ----
   function invoke(cmd, args) {
@@ -37,7 +40,7 @@
 
   // ---- Filter & render ----
   function filterAndRender() {
-    const query = (searchInput().value || '').toLowerCase().trim();
+    const query = (search.value || '').toLowerCase().trim();
 
     if (query) {
       filtered = snippets.filter(s =>
@@ -54,8 +57,6 @@
 
   // ---- Render ----
   function render() {
-    const list = listEl();
-
     if (filtered.length === 0) {
       list.innerHTML = '<div class="picker-empty">Nenhum snippet encontrado</div>';
       return;
@@ -68,7 +69,7 @@
         <div class="picker-item ${i === selectedIndex ? 'selected' : ''}"
              data-index="${i}" data-id="${s.id}">
           <div class="item-left">
-            <span class="item-icon">⚡</span>
+            <span class="item-icon"><i data-lucide="zap"></i></span>
             <span class="item-name">${escapeHtml(s.name)}</span>
           </div>
           <div class="item-right">
@@ -96,16 +97,20 @@
     if (selectedEl) {
       selectedEl.scrollIntoView({ block: 'nearest' });
     }
+
+    if (window.lucide) {
+      window.lucide.createIcons();
+    }
   }
 
   // ---- Update selection highlight ----
   function updateSelection() {
-    const items = listEl().querySelectorAll('.picker-item');
+    const items = list.querySelectorAll('.picker-item');
     items.forEach((item, i) => {
       item.classList.toggle('selected', i === selectedIndex);
     });
 
-    const selectedEl = listEl().querySelector('.picker-item.selected');
+    const selectedEl = list.querySelector('.picker-item.selected');
     if (selectedEl) {
       selectedEl.scrollIntoView({ block: 'nearest' });
     }
@@ -152,7 +157,7 @@
 
   // ---- Init ----
   async function init() {
-    const search = searchInput();
+    // search is already defined globally
 
     // Detect if platform is macOS
     isMac = navigator.userAgent.indexOf('Mac') !== -1;
@@ -222,13 +227,12 @@
         search.value = '';
         selectedIndex = 0;
         
-        // Multi-stage focus to handle compositor window activation delays
-        search.focus();
-        setTimeout(() => search.focus(), 30);
-        setTimeout(() => search.focus(), 100);
-        setTimeout(() => search.focus(), 250);
-
         await loadSnippets();
+
+        // Focus search input
+        search.focus();
+        setTimeout(() => search.focus(), 50);
+        setTimeout(() => search.focus(), 150);
       });
     } catch (err) {
       console.warn('Could not listen for picker-activated event:', err);
@@ -236,6 +240,10 @@
 
     // Load snippets
     await loadSnippets();
+
+    if (window.lucide) {
+      window.lucide.createIcons();
+    }
   }
 
   // Wait for DOM

@@ -8,6 +8,8 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
     <link rel="stylesheet" href="styles/main.css" />
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
   </head>
 
   <body>
@@ -18,7 +20,7 @@
           <div class="logo-subtitle">Macro Expander</div>
           <h1>guepardosys-snip</h1>
           <div class="search-wrapper">
-            <span class="search-icon">🔍</span>
+            <span class="search-icon"><i data-lucide="search"></i></span>
             <input
               type="text"
               id="sidebar-search"
@@ -32,17 +34,17 @@
 
         <div id="snippet-list" class="snippet-list scroller">
           <div class="snippet-list-empty">
-            <div class="empty-icon">📋</div>
+            <div class="empty-icon"><i data-lucide="clipboard-list"></i></div>
             Nenhum snippet ainda.<br>Crie o primeiro!
           </div>
         </div>
 
         <div class="sidebar-footer">
           <button id="btn-new-snippet" class="btn-new-snippet" type="button">
-            <span>＋</span> Novo Snippet
+            <span><i data-lucide="plus"></i></span> Novo Snippet
           </button>
           <button id="btn-settings" class="btn-settings" type="button" title="Configurações">
-            ⚙️
+            <i data-lucide="settings"></i>
           </button>
         </div>
       </aside>
@@ -52,21 +54,21 @@
         <!-- Platform Permission Banner -->
         <div id="permission-banner" class="permission-banner" style="display: none;">
           <div class="banner-content">
-            <span class="banner-icon">⚠️</span>
+            <span class="banner-icon"><i data-lucide="alert-triangle"></i></span>
             <div class="banner-text">
               <h4 id="banner-title">Permissão Necessária</h4>
               <p id="banner-description">Para simular digitação e usar atalhos globais, são necessárias permissões do sistema.</p>
             </div>
             <div class="banner-actions">
-              <button id="btn-open-settings" class="btn btn-secondary btn-sm" type="button">⚙️ Configurar</button>
-              <button id="btn-close-banner" class="btn-close-banner" type="button" aria-label="Fechar aviso">×</button>
+              <button id="btn-open-settings" class="btn btn-secondary btn-sm" type="button"><i data-lucide="settings"></i> Configurar</button>
+              <button id="btn-close-banner" class="btn-close-banner" type="button" aria-label="Fechar aviso"><i data-lucide="x"></i></button>
             </div>
           </div>
         </div>
 
         <!-- Empty state (shown when no snippet selected) -->
         <div id="empty-state" class="empty-state">
-          <div class="empty-state-icon">⌨️</div>
+          <div class="empty-state-icon"><i data-lucide="keyboard"></i></div>
           <h2>Selecione ou crie um snippet</h2>
           <p>Escolha um snippet na lista ao lado para editar, ou clique em "Novo Snippet" para criar um.</p>
         </div>
@@ -77,10 +79,10 @@
             <h2 id="editor-title">Editar Snippet</h2>
             <div class="editor-actions">
               <button id="btn-delete" class="btn btn-danger" type="button" style="display: none;">
-                🗑 Remover
+                <i data-lucide="trash-2"></i> Remover
               </button>
               <button id="btn-save" class="btn btn-primary" type="button">
-                💾 Salvar
+                <i data-lucide="save"></i> Salvar
               </button>
             </div>
           </div>
@@ -128,24 +130,120 @@
           <div class="form-group">
             <label for="input-shortcut">Atalho Global do Spotlight</label>
             <div class="shortcut-recorder-wrapper">
-              <input
-                type="text"
+              <div
                 id="input-shortcut"
                 class="form-input shortcut-recorder"
-                placeholder="Clique aqui e pressione as teclas..."
-                readonly
-                autocomplete="off"
-                spellcheck="false"
-              />
-              <button id="btn-reset-shortcut" class="btn btn-secondary btn-sm" type="button">Restaurar Padrão</button>
+                tabindex="0"
+                style="display: flex; align-items: center; justify-content: center; min-height: 38px;"
+              >Clique aqui e pressione as teclas...</div>
+              <button id="btn-reset-shortcut" class="btn btn-secondary btn-sm" type="button"><i data-lucide="rotate-ccw"></i> Restaurar Padrão</button>
             </div>
             <p class="form-help-text">Clique no campo acima e pressione a combinação de teclas desejada (ex: Ctrl+Espaço, Alt+S, etc.).</p>
+            
+            <!-- Keyboard Conflict Warning Alert -->
+            <div id="settings-conflict-alert" class="conflict-alert" style="display: none; margin-top: 12px; padding: 12px; background: rgba(231, 76, 60, 0.08); border: 1px solid rgba(231, 76, 60, 0.25); border-radius: var(--radius-md); font-size: 13px;">
+              <div style="display: flex; align-items: flex-start; gap: 10px;">
+                <span style="color: var(--danger); font-size: 16px; margin-top: 2px;"><i data-lucide="alert-circle"></i></span>
+                <div style="flex: 1;">
+                  <strong style="color: #ff4d6a;">Conflito de Atalhos do GNOME Detectado:</strong>
+                  <p id="settings-conflict-desc" style="margin: 4px 0 8px; color: var(--text-secondary); line-height: 1.4;"></p>
+                  <button id="btn-resolve-settings-conflict" class="btn btn-danger btn-sm" type="button">Resolver Conflito Automaticamente</button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="form-group" style="margin-top: 32px; border-top: 1px solid var(--border-subtle); padding-top: 24px;">
+            <label>Assistente de Configuração</label>
+            <p class="form-help-text" style="margin-bottom: 12px; font-size: 13px;">Precisa reconfigurar permissões do sistema ou refazer a configuração inicial? Use o assistente passo a passo.</p>
+            <button id="btn-open-wizard" class="btn btn-secondary" type="button">
+              <i data-lucide="help-circle"></i> Abrir Assistente de Configuração
+            </button>
           </div>
         </div>
       </main>
     </div>
 
     <div id="toast-container" class="toast-container"></div>
+
+    <!-- Onboarding Setup Wizard Overlay -->
+    <div id="wizard-overlay" class="wizard-overlay">
+      <div class="wizard-card">
+        <div class="wizard-progress">
+          <div id="wizard-progress-bar" class="wizard-progress-bar" style="width: 25%;"></div>
+        </div>
+        
+        <div class="wizard-content">
+          <!-- Slide 1: Welcome -->
+          <div class="wizard-step active" data-step="1">
+            <div class="wizard-step-icon"><i data-lucide="sparkles"></i></div>
+            <h2>Bem-vindo ao guepardosys-snip!</h2>
+            <p>O seu expandidor de snippets e macros ultra rápido. Vamos realizar uma configuração inicial simples para deixar tudo pronto para uso.</p>
+            <div class="illustration-graphic" style="display: flex; align-items: center; justify-content: center; width: 100px; height: 100px; border-radius: 50%; background: rgba(245, 159, 0, 0.05); border: 1px solid rgba(245, 159, 0, 0.15);">
+              <i data-lucide="zap" style="width: 42px; height: 42px; color: var(--accent);"></i>
+            </div>
+          </div>
+          
+          <!-- Slide 2: Permissions -->
+          <div class="wizard-step" data-step="2">
+            <div class="wizard-step-icon"><i data-lucide="shield-check"></i></div>
+            <h2 id="wizard-permission-title">Permissões do Sistema</h2>
+            <p id="wizard-permission-desc">Para que o aplicativo possa colar snippets automaticamente e capturar atalhos, precisamos habilitar algumas permissões do sistema operacional.</p>
+            
+            <div class="wizard-permission-box" id="wizard-permission-box" style="width: 100%;">
+              <!-- Content injected via JS based on OS (GNOME/macOS) -->
+            </div>
+          </div>
+          
+          <!-- Slide 3: Shortcut Configuration -->
+          <div class="wizard-step" data-step="3">
+            <div class="wizard-step-icon"><i data-lucide="keyboard"></i></div>
+            <h2>Escolha seu Atalho Global</h2>
+            <p>Clique na caixa de texto abaixo antes de começar a digitar o atalho desejado. Em seguida, pressione a combinação de teclas para cadastrar o atalho global que abrirá o painel de busca rápida (Spotlight) em qualquer tela.</p>
+            
+            <div class="form-group" style="width: 100%; margin-top: 16px;">
+              <div class="shortcut-recorder-wrapper" style="justify-content: center; align-items: stretch; max-width: 420px; margin: 0 auto;">
+                <div
+                  id="wizard-shortcut-input"
+                  class="form-input shortcut-recorder"
+                  tabindex="0"
+                  style="font-size: 16px; padding: 14px 20px; max-width: 280px; flex: 1; display: flex; align-items: center; justify-content: center; min-height: 48px;"
+                >Clique aqui e pressione as teclas...</div>
+                <button id="wizard-btn-reset-shortcut" class="btn btn-secondary btn-sm" type="button" style="padding: 0 16px;"><i data-lucide="rotate-ccw"></i> Restaurar Padrão</button>
+              </div>
+              <p class="form-help-text" style="text-align: center; margin-top: 8px;">Recomendado: Ctrl+; ou Alt+Espaço (Use modificadores).</p>
+              
+              <!-- Keyboard Conflict Warning Alert in Wizard -->
+              <div id="wizard-conflict-alert" class="conflict-alert" style="display: none; margin: 16px auto 0; padding: 12px 16px; background: rgba(231, 76, 60, 0.08); border: 1px solid rgba(231, 76, 60, 0.25); border-radius: var(--radius-md); font-size: 13px; text-align: left; max-width: 420px;">
+                <div style="display: flex; align-items: flex-start; gap: 10px;">
+                  <span style="color: var(--danger); font-size: 16px; margin-top: 2px;"><i data-lucide="alert-circle"></i></span>
+                  <div style="flex: 1;">
+                    <strong style="color: #ff4d6a;">Conflito de Atalhos do GNOME:</strong>
+                    <p id="wizard-conflict-desc" style="margin: 4px 0 8px; color: var(--text-secondary); line-height: 1.4;"></p>
+                    <button id="btn-resolve-wizard-conflict" class="btn btn-danger btn-sm" type="button" style="width: 100%;">Resolver Conflito Automaticamente</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+          
+          <!-- Slide 4: All Done -->
+          <div class="wizard-step" data-step="4">
+            <div class="wizard-step-icon" style="background: rgba(46, 204, 113, 0.1); border-color: rgba(46, 204, 113, 0.2); color: #2ecc71; box-shadow: none;"><i data-lucide="check-circle-2"></i></div>
+            <h2>Tudo Pronto!</h2>
+            <p>As configurações iniciais foram aplicadas com sucesso. Agora você pode criar snippets no gerenciador e ativá-los a qualquer momento pressionando seu atalho global.</p>
+            <div class="illustration-graphic" style="border-color: rgba(46, 204, 113, 0.15); background: rgba(46, 204, 113, 0.03); padding: 10px 20px; border-radius: var(--radius-md); border: 1px solid rgba(46, 204, 113, 0.2);">
+              <span style="font-size: 13px; color: #2ecc71; font-weight: 500;">Configurações salvas e atalho ativo!</span>
+            </div>
+          </div>
+        </div>
+        
+        <div class="wizard-footer">
+          <button id="wizard-btn-prev" class="btn btn-secondary" style="visibility: hidden;">Anterior</button>
+          <button id="wizard-btn-next" class="btn btn-primary">Começar</button>
+        </div>
+      </div>
+    </div>
 
     <script src="scripts/macro-editor.js"></script>
     <script src="scripts/manager.js"></script>

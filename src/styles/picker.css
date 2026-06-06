@@ -55,7 +55,7 @@ html, body {
 .picker {
   display: flex;
   flex-direction: column;
-  height: 100vh;
+  height: 100%;
   background: var(--bg-glass);
   backdrop-filter: blur(28px) saturate(1.8);
   -webkit-backdrop-filter: blur(28px) saturate(1.8);
@@ -295,3 +295,25 @@ html, body {
   font-weight: 700;
   color: var(--text-primary);
 }
+
+/* ---------- Lucide Icons Sizing ---------- */
+.lucide {
+  width: 1.2em;
+  height: 1.2em;
+  stroke-width: 2.2;
+  display: inline-block;
+  vertical-align: middle;
+  stroke: currentColor;
+  fill: none;
+}
+
+.item-icon .lucide {
+  width: 15px;
+  height: 15px;
+  color: var(--accent);
+}
+
+.picker-item.selected .item-icon .lucide {
+  color: #ffffff;
+}
+

@@ -11,20 +11,76 @@ use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 
 use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 fn picker_last_shown() -> &'static Mutex<Option<Instant>> {
     static CELL: OnceLock<Mutex<Option<Instant>>> = OnceLock::new();
     CELL.get_or_init(|| Mutex::new(None))
 }
 
-fn focus_picker(picker: &tauri::WebviewWindow) {
-    let picker_clone = picker.clone();
-    std::thread::spawn(move || {
-        for delay in &[10, 50, 150, 300] {
-            std::thread::sleep(std::time::Duration::from_millis(*delay));
-            let _ = picker_clone.set_focus();
+static SHORTCUT_RECORDING_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+pub fn is_shortcut_recording_active() -> bool {
+    SHORTCUT_RECORDING_ACTIVE.load(Ordering::Relaxed)
+}
+
+pub fn set_shortcut_recording_active(active: bool) {
+    SHORTCUT_RECORDING_ACTIVE.store(active, Ordering::Relaxed);
+}
+
+
+fn toggle_picker(app: &tauri::AppHandle) {
+    if is_shortcut_recording_active() {
+        return;
+    }
+    if let Some(picker) = app.get_webview_window("picker") {
+        if picker.is_visible().unwrap_or(false) {
+            let _ = picker.hide();
+        } else {
+            let mut timestamp: Option<u32> = None;
+            #[cfg(target_os = "linux")]
+            {
+                if let Ok(startup_id) = std::fs::read_to_string("/tmp/guepardosys-snip-startup-id") {
+                    if let Some(pos) = startup_id.rfind("_TIME") {
+                        let ts_str = startup_id[pos + 5..].trim();
+                        if let Ok(ts) = ts_str.parse::<u32>() {
+                            timestamp = Some(ts);
+                        }
+                    }
+                    let _ = std::fs::remove_file("/tmp/guepardosys-snip-startup-id");
+                }
+            }
+
+            picker.center().unwrap_or_default();
+            let _ = picker.set_always_on_top(false);
+            let _ = picker.show();
+            let _ = picker.set_always_on_top(true);
+
+            #[cfg(target_os = "linux")]
+            {
+                if let Ok(gtk_win) = picker.gtk_window() {
+                    use gtk::prelude::*;
+                    if let Some(ts) = timestamp {
+                        gtk_win.present_with_time(ts);
+                    } else {
+                        gtk_win.present();
+                    }
+                } else {
+                    let _ = picker.set_focus();
+                }
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                let _ = picker.set_focus();
+            }
+
+            if let Ok(mut last_shown) = picker_last_shown().lock() {
+                *last_shown = Some(Instant::now());
+            }
+
+            picker.emit("picker-activated", ()).unwrap_or_default();
         }
-    });
+    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -37,21 +93,7 @@ pub fn run() {
         .plugin(tauri_plugin_global_shortcut::Builder::new()
             .with_handler(|app, _shortcut, event| {
                 if event.state == ShortcutState::Pressed {
-                    if let Some(picker) = app.get_webview_window("picker") {
-                        if picker.is_visible().unwrap_or(false) {
-                            let _ = picker.hide();
-                        } else {
-                            picker.center().unwrap_or_default();
-                            picker.show().unwrap_or_default();
-                            focus_picker(&picker);
-
-                            if let Ok(mut last_shown) = picker_last_shown().lock() {
-                                *last_shown = Some(Instant::now());
-                            }
-
-                            picker.emit("picker-activated", ()).unwrap_or_default();
-                        }
-                    }
+                    toggle_picker(app);
                 }
             })
             .build()
@@ -59,17 +101,7 @@ pub fn run() {
         .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
             let has_picker_arg = argv.iter().any(|arg| arg == "--picker" || arg == "--toggle" || arg == "-p");
             if has_picker_arg {
-                if let Some(picker) = app.get_webview_window("picker") {
-                    picker.center().unwrap_or_default();
-                    picker.show().unwrap_or_default();
-                    focus_picker(&picker);
-
-                    if let Ok(mut last_shown) = picker_last_shown().lock() {
-                        *last_shown = Some(Instant::now());
-                    }
-
-                    picker.emit("picker-activated", ()).unwrap_or_default();
-                }
+                toggle_picker(app);
             } else {
                 if let Some(main_window) = app.get_webview_window("main") {
                     main_window.show().unwrap_or_default();
@@ -90,6 +122,13 @@ pub fn run() {
             commands::open_system_settings,
             commands::get_shortcut,
             commands::set_shortcut,
+            commands::disable_global_shortcut,
+            commands::enable_global_shortcut,
+            commands::set_shortcut_recording_active,
+            commands::set_onboarding_completed,
+            commands::trigger_permission_check,
+            commands::check_keyboard_conflicts,
+            commands::resolve_keyboard_conflict,
         ])
         .on_window_event(|window, event| {
             match event {
@@ -112,7 +151,7 @@ pub fn run() {
                         if should_hide {
                             window.hide().unwrap_or_default();
                         } else {
-                            // Focus was lost within grace period (usually due to Wayland compositor mapping delay),
+                            // Focus was lost within grace period (usually due to Wayland/XWayland mapping delay),
                             // request focus again.
                             let w = window.clone();
                             std::thread::spawn(move || {
@@ -142,7 +181,7 @@ pub fn run() {
             #[cfg(not(any(target_os = "android", target_os = "ios")))]
             {
                 let app_handle = app.handle();
-                let shortcut_str = commands::get_shortcut_from_file(app_handle);
+                let (shortcut_str, _, _) = commands::get_shortcut_from_file(app_handle);
                 match commands::parse_shortcut(&shortcut_str) {
                     Ok(shortcut) => {
                         if let Err(e) = app.global_shortcut().register(shortcut) {
@@ -155,6 +194,18 @@ pub fn run() {
                         let default_str = if cfg!(target_os = "macos") { "Command+;" } else { "Ctrl+;" };
                         if let Ok(default_shortcut) = commands::parse_shortcut(default_str) {
                             let _ = app.global_shortcut().register(default_shortcut);
+                        }
+                    }
+                }
+
+                // On Linux GNOME, also synchronize the system-wide shortcut on startup
+                #[cfg(target_os = "linux")]
+                {
+                    let desktop = std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_default().to_lowercase();
+                    let session_type = std::env::var("XDG_SESSION_TYPE").unwrap_or_default().to_lowercase();
+                    if (desktop.contains("gnome") || desktop.contains("ubuntu")) && (session_type == "wayland" || commands::is_gnome_shortcut_registered()) {
+                        if let Err(e) = commands::register_gnome_shortcut(app_handle) {
+                            eprintln!("Failed to register startup GNOME custom shortcut: {}", e);
                         }
                     }
                 }

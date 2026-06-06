@@ -80,10 +80,13 @@
     if (filtered.length === 0) {
       list.innerHTML = `
         <div class="snippet-list-empty">
-          <div class="empty-icon">📋</div>
+          <div class="empty-icon"><i data-lucide="clipboard-list"></i></div>
           ${filter ? 'Nenhum snippet encontrado' : 'Nenhum snippet ainda.<br>Crie o primeiro!'}
         </div>
       `;
+      if (window.lucide) {
+        window.lucide.createIcons();
+      }
       return;
     }
 
@@ -101,6 +104,10 @@
         selectSnippet(item.dataset.id);
       });
     });
+
+    if (window.lucide) {
+      window.lucide.createIcons();
+    }
   }
 
   // ---- Panel Switcher ----
@@ -241,12 +248,13 @@
     showPanel('settings');
     
     try {
-      shortcutInput().value = 'Carregando...';
-      const shortcut = await invoke('get_shortcut');
-      shortcutInput().value = formatShortcutForDisplay(shortcut);
+      shortcutInput().textContent = 'Carregando...';
+      const config = await invoke('get_shortcut');
+      shortcutInput().textContent = config.display || formatShortcutForDisplay(config.shortcut);
+      await checkAndShowConflicts();
     } catch (err) {
       console.error('Failed to load shortcut:', err);
-      shortcutInput().value = isMac ? 'Command+;' : 'Ctrl+;';
+      shortcutInput().textContent = isMac ? 'Command+;' : 'Ctrl+;';
       showToast('Erro ao carregar atalho: ' + err, 'error');
     }
   }
@@ -259,9 +267,9 @@
       .replace(/Meta/i, isMac ? 'Cmd' : 'Win');
   }
 
-  async function saveShortcut(shortcutStr) {
+  async function saveShortcut(shortcutStr, displayStr) {
     try {
-      await invoke('set_shortcut', { shortcut: shortcutStr });
+      await invoke('set_shortcut', { shortcut: shortcutStr, display: displayStr });
       showToast('Atalho atualizado com sucesso!');
     } catch (err) {
       console.error('Failed to save shortcut:', err);
@@ -270,8 +278,135 @@
     }
   }
 
+  function getPhysicalKeyName(code) {
+    if (code.startsWith('Key')) {
+      return code.slice(3).toUpperCase();
+    }
+    if (code.startsWith('Digit')) {
+      return code.slice(5);
+    }
+    const upper = code.toUpperCase();
+    switch (upper) {
+      case 'SEMICOLON': return 'Semicolon';
+      case 'COMMA': return 'Comma';
+      case 'PERIOD': return 'Period';
+      case 'SLASH': return 'Slash';
+      case 'EQUAL': return 'Equal';
+      case 'MINUS': return 'Minus';
+      case 'BRACKETLEFT': return 'BracketLeft';
+      case 'BRACKETRIGHT': return 'BracketRight';
+      case 'QUOTE': return 'Quote';
+      case 'BACKQUOTE': return 'Backquote';
+      case 'BACKSLASH': return 'Backslash';
+      case 'INTLRO': return 'IntlRo';
+      case 'INTLBACKSLASH': return 'IntlBackslash';
+      case 'ARROWUP': return 'Up';
+      case 'ARROWDOWN': return 'Down';
+      case 'ARROWLEFT': return 'Left';
+      case 'ARROWRIGHT': return 'Right';
+      case 'SPACE': return 'Space';
+      case 'ENTER': return 'Enter';
+      case 'ESCAPE': return 'Escape';
+      case 'TAB': return 'Tab';
+      case 'BACKSPACE': return 'Backspace';
+      case 'DELETE': return 'Delete';
+      case 'INSERT': return 'Insert';
+      case 'HOME': return 'Home';
+      case 'END': return 'End';
+      case 'PAGEUP': return 'PageUp';
+      case 'PAGEDOWN': return 'PageDown';
+      default:
+        return code;
+    }
+  }
+
+  function getDisplayKeyName(e) {
+    let key = e.key;
+    const code = e.code;
+    
+    const namedKeys = {
+      'Space': 'Space',
+      ' ': 'Space',
+      'Enter': 'Enter',
+      'Escape': 'Esc',
+      'Esc': 'Esc',
+      'Tab': 'Tab',
+      'Backspace': 'Backspace',
+      'Delete': 'Del',
+      'Del': 'Del',
+      'Insert': 'Ins',
+      'Ins': 'Ins',
+      'Home': 'Home',
+      'End': 'End',
+      'PageUp': 'PageUp',
+      'PageDown': 'PageDown',
+      'ArrowUp': 'Up',
+      'ArrowDown': 'Down',
+      'ArrowLeft': 'Left',
+      'ArrowRight': 'Right',
+    };
+    
+    if (namedKeys[code]) return namedKeys[code];
+    if (namedKeys[key]) return namedKeys[key];
+    
+    if (/^F[1-9][0-2]?$/.test(code) || /^F[1-9][0-2]?$/.test(key)) {
+      return code.toUpperCase();
+    }
+    
+    // Normalize shifted symbols back to base symbols if Shift modifier is active
+    if (e.shiftKey && key.length === 1) {
+      const shiftedToUnshifted = {
+        ':': ';',
+        '?': '/',
+        '>': '.',
+        '<': ',',
+        '+': '=',
+        '_': '-',
+        '}': ']',
+        '{': '[',
+        '"': "'",
+        '|': '\\',
+        '~': '`',
+        '^': '~',
+      };
+      if (shiftedToUnshifted[key]) {
+        key = shiftedToUnshifted[key];
+      }
+    }
+    
+    if (key.length === 1) {
+      return key.toUpperCase();
+    }
+    
+    return key;
+  }
+
   function setupShortcutRecorder() {
     const input = shortcutInput();
+    let isSaving = false;
+
+    input.addEventListener('focus', async () => {
+      isSaving = false;
+      try {
+        await invoke('set_shortcut_recording_active', { active: true });
+        await invoke('disable_global_shortcut');
+      } catch (err) {
+        console.error('Failed to disable global shortcut:', err);
+      }
+    });
+
+    input.addEventListener('blur', async () => {
+      setTimeout(async () => {
+        if (isSaving) return;
+        try {
+          await invoke('set_shortcut_recording_active', { active: false });
+          await invoke('enable_global_shortcut');
+          await showSettings();
+        } catch (err) {
+          console.error('Failed to enable global shortcut:', err);
+        }
+      }, 150);
+    });
     
     input.addEventListener('keydown', async (e) => {
       e.preventDefault();
@@ -286,78 +421,450 @@
         if (e.altKey) parts.push('Alt');
         if (e.shiftKey) parts.push('Shift');
         if (e.metaKey) parts.push(isMac ? 'Cmd' : 'Win');
-        input.value = parts.join('+') + '+...';
+        input.textContent = parts.join('+') + '+...';
         return;
       }
       
-      let parts = [];
-      if (e.ctrlKey) parts.push('Ctrl');
-      if (e.altKey) parts.push('Alt');
-      if (e.shiftKey) parts.push('Shift');
-      if (e.metaKey) parts.push(isMac ? 'Cmd' : 'Win');
+      let physicalParts = [];
+      let displayParts = [];
       
-      let keyName = '';
-      if (code.startsWith('Key')) {
-        keyName = code.slice(3);
-      } else if (code.startsWith('Digit')) {
-        keyName = code.slice(5);
-      } else {
-        switch (code) {
-          case 'Space': keyName = 'Space'; break;
-          case 'Enter': keyName = 'Enter'; break;
-          case 'Escape': keyName = 'Escape'; break;
-          case 'Tab': keyName = 'Tab'; break;
-          case 'Backspace': keyName = 'Backspace'; break;
-          case 'Delete': keyName = 'Delete'; break;
-          case 'Insert': keyName = 'Insert'; break;
-          case 'Home': keyName = 'Home'; break;
-          case 'End': keyName = 'End'; break;
-          case 'PageUp': keyName = 'PageUp'; break;
-          case 'PageDown': keyName = 'PageDown'; break;
-          case 'ArrowUp': keyName = 'Up'; break;
-          case 'ArrowDown': keyName = 'Down'; break;
-          case 'ArrowLeft': keyName = 'Left'; break;
-          case 'ArrowRight': keyName = 'Right'; break;
-          case 'Semicolon': keyName = ';'; break;
-          case 'Comma': keyName = ','; break;
-          case 'Period': keyName = '.'; break;
-          case 'Slash': keyName = '/'; break;
-          case 'Equal': keyName = '='; break;
-          case 'Minus': keyName = '-'; break;
-          case 'BracketLeft': keyName = '['; break;
-          case 'BracketRight': keyName = ']'; break;
-          case 'Quote': keyName = '\''; break;
-          case 'Backquote': keyName = '`'; break;
-          case 'Backslash': keyName = '\\'; break;
-          default:
-            if (key.length === 1) {
-              keyName = key.toUpperCase();
-            } else {
-              keyName = key;
-            }
-        }
+      if (e.ctrlKey) {
+        physicalParts.push('Ctrl');
+        displayParts.push('Ctrl');
+      }
+      if (e.altKey) {
+        physicalParts.push('Alt');
+        displayParts.push('Alt');
+      }
+      if (e.shiftKey) {
+        physicalParts.push('Shift');
+        displayParts.push('Shift');
+      }
+      if (e.metaKey) {
+        physicalParts.push(isMac ? 'Cmd' : 'Win');
+        displayParts.push(isMac ? 'Cmd' : 'Win');
       }
       
-      parts.push(keyName);
+      const physicalKeyName = getPhysicalKeyName(code);
+      const displayKeyName = getDisplayKeyName(e);
+      
+      physicalParts.push(physicalKeyName);
+      displayParts.push(displayKeyName);
       
       const hasModifier = e.ctrlKey || e.altKey || e.shiftKey || e.metaKey;
-      const isFKey = /^F[1-9][0-2]?$/.test(keyName);
+      const isFKey = /^F[1-9][0-2]?$/.test(physicalKeyName);
       
       if (hasModifier || isFKey) {
-        const finalShortcut = parts.join('+');
-        input.value = finalShortcut;
-        await saveShortcut(finalShortcut);
+        const finalShortcut = physicalParts.join('+');
+        const displayShortcut = displayParts.join('+');
+        input.textContent = displayShortcut;
+        isSaving = true;
+        await invoke('set_shortcut_recording_active', { active: false });
+        await saveShortcut(finalShortcut, displayShortcut);
         input.blur();
       } else {
-        input.value = parts.join('+') + ' (adicione modificador)';
+        input.textContent = displayParts.join('+') + ' (adicione modificador)';
       }
     });
 
     btnResetShortcut().addEventListener('click', async () => {
       const defaultShortcut = isMac ? 'Command+;' : 'Ctrl+;';
-      input.value = formatShortcutForDisplay(defaultShortcut);
-      await saveShortcut(defaultShortcut);
+      input.textContent = formatShortcutForDisplay(defaultShortcut);
+      isSaving = true;
+      await invoke('set_shortcut_recording_active', { active: false });
+      await saveShortcut(defaultShortcut, defaultShortcut);
+      input.blur();
     });
+  }
+
+  // ---- Onboarding Wizard ----
+  let currentStep = 1;
+  let needsPermissionStep = false;
+  let platformInfo = null;
+  let wizardIsSaving = false;
+  let wizardPhysicalShortcut = '';
+  let wizardDisplayShortcut = '';
+
+  async function checkPlatformForWizard() {
+    try {
+      platformInfo = await invoke('get_platform_info');
+      needsPermissionStep = platformInfo.needsPermission;
+    } catch (err) {
+      console.error(err);
+      needsPermissionStep = false;
+    }
+  }
+
+  async function checkOnboarding() {
+    try {
+      const config = await invoke('get_shortcut');
+      await checkPlatformForWizard();
+      if (!config.onboardingCompleted) {
+        showWizard();
+      }
+    } catch (err) {
+      console.error('Failed to check onboarding:', err);
+    }
+  }
+
+  function showWizard() {
+    const overlay = document.getElementById('wizard-overlay');
+    overlay.classList.add('visible');
+    currentStep = 1;
+    wizardIsSaving = false;
+    wizardPhysicalShortcut = '';
+    wizardDisplayShortcut = '';
+    renderWizardStep();
+  }
+
+  function renderWizardStep() {
+    // Hide all steps
+    document.querySelectorAll('.wizard-step').forEach(step => {
+      step.classList.remove('active');
+    });
+    
+    // Show current step
+    const stepEl = document.querySelector(`.wizard-step[data-step="${currentStep}"]`);
+    if (stepEl) stepEl.classList.add('active');
+    
+    // Update progress bar
+    const progressEl = document.getElementById('wizard-progress-bar');
+    progressEl.style.width = `${(currentStep / 4) * 100}%`;
+    
+    // Update buttons
+    const btnPrev = document.getElementById('wizard-btn-prev');
+    const btnNext = document.getElementById('wizard-btn-next');
+    
+    if (currentStep === 1) {
+      btnPrev.style.visibility = 'hidden';
+      btnNext.textContent = 'Começar';
+    } else if (currentStep === 4) {
+      btnPrev.style.visibility = 'hidden';
+      btnNext.textContent = 'Concluir';
+    } else {
+      btnPrev.style.visibility = 'visible';
+      btnNext.textContent = 'Avançar';
+    }
+    
+    // Specific step load logic
+    if (currentStep === 2) {
+      loadWizardPermissions();
+    }
+    
+    if (currentStep === 3) {
+      loadWizardShortcut();
+    }
+  }
+
+  function loadWizardPermissions() {
+    const box = document.getElementById('wizard-permission-box');
+    if (!platformInfo) return;
+    
+    if (platformInfo.permissionType === 'linux-wayland') {
+      box.innerHTML = `
+        <div class="wizard-permission-actions">
+          <div class="wizard-permission-title">1. Permitir Interação Remota (Obrigatório)</div>
+          <p class="wizard-permission-desc">Para que o aplicativo possa digitar textos e executar ações de teclado no Wayland, <strong>a permissão de Controle Remoto deve estar ATIVADA</strong>. Sem ela, os macros não funcionarão.</p>
+          
+          <div style="background: rgba(245, 159, 0, 0.08); border: 1px solid rgba(245, 159, 0, 0.25); border-radius: var(--radius-md); padding: 12px 16px; margin: 12px 0; font-size: 13px;">
+            <div style="display: flex; align-items: flex-start; gap: 10px;">
+              <span style="color: var(--accent); font-size: 16px; margin-top: 2px;"><i data-lucide="alert-triangle"></i></span>
+              <div>
+                <strong style="color: var(--accent);">Importante:</strong>
+                <p style="margin: 4px 0 0; color: var(--text-secondary); line-height: 1.4;">Quando esta opção está ativada, um <strong>ícone amarelo</strong> aparece na bandeja do sistema. Clicando nele, você pode desativar facilmente o Controle Remoto. <strong>Não desative</strong>, ou os macros pararão de funcionar!</p>
+              </div>
+            </div>
+          </div>
+          
+          <!-- GNOME Dialog Mockup -->
+          <div class="gnome-dialog-mockup">
+            <div class="gnome-dialog-header">
+              <span class="gnome-btn-cancel" id="gnome-mock-cancel">Cancelar</span>
+              <span class="gnome-dialog-title">Área de trabalho remota</span>
+              <span class="gnome-btn-share disabled" id="gnome-mock-share">Compartilhar</span>
+            </div>
+            <div class="gnome-dialog-body">
+              <div class="gnome-row focus-ring">
+                <span class="gnome-row-label">Permitir interação remota</span>
+                <div class="gnome-toggle" id="gnome-mock-toggle" role="checkbox" aria-checked="false" tabindex="0">
+                  <span class="gnome-toggle-thumb"></span>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="gnome-mockup-guide">Guia: Ative o switch e clique em Compartilhar para ver como funciona! No diálogo real, faça exatamente o mesmo.</div>
+
+          <button id="wizard-btn-trigger-perm" class="btn btn-primary btn-sm" type="button" style="margin-top: 16px; margin-bottom: 16px; width: 100%;">
+            <i data-lucide="shield-alert"></i> Disparar Solicitação de Permissão
+          </button>
+
+          <div class="wizard-permission-title" style="border-top: 1px solid var(--border-subtle); padding-top: 16px;">2. Cadastrar Atalho no Sistema (Wayland)</div>
+          <p class="wizard-permission-desc">Para abrir a busca quando o app estiver em segundo plano, clique abaixo e adicione um atalho de teclado personalizado no sistema com o comando de ativação.</p>
+          <button id="wizard-btn-open-sys-settings" class="btn btn-secondary" type="button" style="width: 100%;">
+            <i data-lucide="settings"></i> Abrir Configurações de Atalhos
+          </button>
+        </div>
+      `;
+      
+      const mockToggle = document.getElementById('gnome-mock-toggle');
+      const mockShare = document.getElementById('gnome-mock-share');
+      const mockCancel = document.getElementById('gnome-mock-cancel');
+      
+      mockToggle.onclick = () => {
+        const isActive = mockToggle.classList.toggle('active');
+        mockToggle.setAttribute('aria-checked', isActive ? 'true' : 'false');
+        if (isActive) {
+          mockShare.classList.remove('disabled');
+          showToast('Mockup ativado! Agora clique em Compartilhar.');
+        } else {
+          mockShare.classList.add('disabled');
+        }
+      };
+      
+      mockShare.onclick = () => {
+        if (!mockShare.classList.contains('disabled')) {
+          showToast('Muito bem! No diálogo real que aparecer, faça exatamente isso.');
+        }
+      };
+
+      mockCancel.onclick = () => {
+        showToast('Não cancele no diálogo real, ou os macros não poderão digitar textos!');
+      };
+      
+      document.getElementById('wizard-btn-trigger-perm').onclick = async () => {
+        try {
+          await invoke('trigger_permission_check');
+          showToast('Solicitação enviada! Ative a opção e clique em Compartilhar.');
+        } catch (err) {
+          console.error(err);
+          showToast('Erro ao disparar permissão: ' + err, 'error');
+        }
+      };
+      
+      document.getElementById('wizard-btn-open-sys-settings').onclick = async () => {
+        try {
+          const result = await invoke('open_system_settings');
+          if (result === 'registered') {
+            showToast('Atalho cadastrado no GNOME com sucesso!');
+          } else {
+            showToast('Configurações abertas!');
+          }
+        } catch (err) {
+          console.error(err);
+          showToast('Erro ao abrir configurações: ' + err, 'error');
+        }
+      };
+    } else if (platformInfo.permissionType === 'macos-accessibility') {
+      box.innerHTML = `
+        <div class="wizard-permission-actions">
+          <div class="wizard-permission-title">Habilitar Acessibilidade</div>
+          <p class="wizard-permission-desc">O aplicativo precisa de permissão de Acessibilidade no macOS para que possa expandir seus snippets de texto em outras janelas.</p>
+          <button id="wizard-btn-open-sys-settings" class="btn btn-primary btn-sm" type="button" style="width: 100%;">
+            <i data-lucide="settings"></i> Abrir Preferências do macOS
+          </button>
+        </div>
+      `;
+      
+      document.getElementById('wizard-btn-open-sys-settings').onclick = async () => {
+        try {
+          await invoke('open_system_settings');
+          showToast('Abrindo Preferências do Sistema...');
+        } catch (err) {
+          console.error(err);
+          showToast('Erro ao abrir configurações: ' + err, 'error');
+        }
+      };
+    } else {
+      box.innerHTML = `
+        <div style="text-align: center; padding: 10px; color: var(--text-secondary);">
+          Nenhuma permissão especial necessária no seu sistema operacional!
+        </div>
+      `;
+    }
+    
+    if (window.lucide) {
+      window.lucide.createIcons();
+    }
+  }
+
+  async function loadWizardShortcut() {
+    const input = document.getElementById('wizard-shortcut-input');
+    try {
+      const config = await invoke('get_shortcut');
+      wizardPhysicalShortcut = config.shortcut;
+      wizardDisplayShortcut = config.display || formatShortcutForDisplay(config.shortcut);
+      input.textContent = wizardDisplayShortcut;
+      await checkAndShowConflicts();
+    } catch (err) {
+      console.error(err);
+    }
+  }
+
+  function setupWizard() {
+    const btnPrev = document.getElementById('wizard-btn-prev');
+    const btnNext = document.getElementById('wizard-btn-next');
+    const btnOpenWizard = document.getElementById('btn-open-wizard');
+    const wizardInput = document.getElementById('wizard-shortcut-input');
+    
+    btnPrev.addEventListener('click', () => {
+      let prevStep = currentStep - 1;
+      if (prevStep === 2 && !needsPermissionStep) {
+        prevStep = 1;
+      }
+      if (prevStep >= 1) {
+        currentStep = prevStep;
+        renderWizardStep();
+      }
+    });
+    
+    btnNext.addEventListener('click', async () => {
+      if (currentStep === 3) {
+        // Save the shortcut recorded in step 3
+        try {
+          if (wizardPhysicalShortcut && wizardDisplayShortcut) {
+            await invoke('set_shortcut', { shortcut: wizardPhysicalShortcut, display: wizardDisplayShortcut });
+          }
+        } catch (err) {
+          console.error('Failed to save wizard shortcut:', err);
+          showToast('Falha ao salvar atalho: ' + err, 'error');
+          return;
+        }
+      }
+      
+      if (currentStep === 4) {
+        // Mark onboarding completed and close overlay
+        try {
+          await invoke('set_onboarding_completed', { completed: true });
+          document.getElementById('wizard-overlay').classList.remove('visible');
+          showToast('Configuração concluída!');
+          checkPlatform(); // refresh banner if needed
+        } catch (err) {
+          console.error(err);
+        }
+        return;
+      }
+      
+      let nextStep = currentStep + 1;
+      if (nextStep === 2 && !needsPermissionStep) {
+        nextStep = 3;
+      }
+      
+      if (nextStep <= 4) {
+        currentStep = nextStep;
+        renderWizardStep();
+      }
+    });
+
+    btnOpenWizard.addEventListener('click', async () => {
+      await checkPlatformForWizard();
+      // When opened from settings, always show permissions step on Wayland
+      // (user may need to re-grant or learn about remote interaction)
+      if (platformInfo && platformInfo.permissionType === 'linux-wayland') {
+        needsPermissionStep = true;
+      }
+      showWizard();
+    });
+
+    const btnResetWizardShortcut = document.getElementById('wizard-btn-reset-shortcut');
+    btnResetWizardShortcut.addEventListener('click', async () => {
+      const defaultShortcut = isMac ? 'Command+;' : 'Ctrl+;';
+      wizardInput.textContent = formatShortcutForDisplay(defaultShortcut);
+      wizardPhysicalShortcut = defaultShortcut;
+      wizardDisplayShortcut = defaultShortcut;
+      wizardIsSaving = true;
+      await invoke('set_shortcut_recording_active', { active: false });
+      wizardInput.blur();
+    });
+
+    wizardInput.addEventListener('focus', async () => {
+      wizardIsSaving = false;
+      try {
+        await invoke('set_shortcut_recording_active', { active: true });
+        await invoke('disable_global_shortcut');
+      } catch (err) {
+        console.error(err);
+      }
+    });
+
+    wizardInput.addEventListener('blur', async () => {
+      setTimeout(async () => {
+        if (wizardIsSaving) return;
+        try {
+          await invoke('set_shortcut_recording_active', { active: false });
+          await invoke('enable_global_shortcut');
+        } catch (err) {
+          console.error(err);
+        }
+      }, 150);
+    });
+
+    wizardInput.addEventListener('keydown', async (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      
+      const key = e.key;
+      const code = e.code;
+      
+      if (['Control', 'Alt', 'Shift', 'Meta'].includes(key)) {
+        let parts = [];
+        if (e.ctrlKey) parts.push('Ctrl');
+        if (e.altKey) parts.push('Alt');
+        if (e.shiftKey) parts.push('Shift');
+        if (e.metaKey) parts.push(isMac ? 'Cmd' : 'Win');
+        wizardInput.textContent = parts.join('+') + '+...';
+        return;
+      }
+      
+      let physicalParts = [];
+      let displayParts = [];
+      
+      if (e.ctrlKey) {
+        physicalParts.push('Ctrl');
+        displayParts.push('Ctrl');
+      }
+      if (e.altKey) {
+        physicalParts.push('Alt');
+        displayParts.push('Alt');
+      }
+      if (e.shiftKey) {
+        physicalParts.push('Shift');
+        displayParts.push('Shift');
+      }
+      if (e.metaKey) {
+        physicalParts.push(isMac ? 'Cmd' : 'Win');
+        displayParts.push(isMac ? 'Cmd' : 'Win');
+      }
+      
+      const physicalKeyName = getPhysicalKeyName(code);
+      const displayKeyName = getDisplayKeyName(e);
+      
+      physicalParts.push(physicalKeyName);
+      displayParts.push(displayKeyName);
+      
+      const hasModifier = e.ctrlKey || e.altKey || e.shiftKey || e.metaKey;
+      const isFKey = /^F[1-9][0-2]?$/.test(physicalKeyName);
+      
+      if (hasModifier || isFKey) {
+        wizardPhysicalShortcut = physicalParts.join('+');
+        wizardDisplayShortcut = displayParts.join('+');
+        wizardInput.textContent = wizardDisplayShortcut;
+        wizardIsSaving = true;
+        await invoke('set_shortcut_recording_active', { active: false });
+        wizardInput.blur();
+      } else {
+        wizardInput.textContent = displayParts.join('+') + ' (adicione modificador)';
+      }
+    });
+
+    // Conflict resolution event handlers
+    const btnResolveSettings = document.getElementById('btn-resolve-settings-conflict');
+    if (btnResolveSettings) {
+      btnResolveSettings.addEventListener('click', resolveAllConflicts);
+    }
+    const btnResolveWizard = document.getElementById('btn-resolve-wizard-conflict');
+    if (btnResolveWizard) {
+      btnResolveWizard.addEventListener('click', resolveAllConflicts);
+    }
   }
 
   // ---- Helpers ----
@@ -382,7 +889,7 @@
 
         if (info.permissionType === 'linux-wayland') {
           bannerTitle().textContent = 'Atalhos Globais & Teclado no Linux Wayland';
-          bannerDescription().innerHTML = `Para usar o atalho <strong>Ctrl+;</strong> em segundo plano, adicione um atalho personalizado no sistema apontando para: <code>guepardosys-snip --toggle</code>. E conceda permissão de <strong>Controle Remoto</strong> quando solicitado.`;
+          bannerDescription().innerHTML = `Para usar o atalho <strong>Ctrl+;</strong> em segundo plano, adicione um atalho personalizado no sistema apontando para: <code>guepardosys-snip --toggle</code>. E conceda permissão de <strong>Controle Remoto</strong> quando solicitado. <span style="color: var(--accent);">⚠ Não desative pelo ícone amarelo na bandeja!</span>`;
         } else if (info.permissionType === 'macos-accessibility') {
           bannerTitle().textContent = 'Acessibilidade no macOS';
           bannerDescription().textContent = `Para expandir snippets, o aplicativo precisa de permissão de Acessibilidade nas configurações de Privacidade e Segurança do macOS.`;
@@ -431,6 +938,9 @@
     // Setup gravador de atalho
     setupShortcutRecorder();
 
+    // Setup onboarding wizard
+    setupWizard();
+
     // Keyboard shortcuts
     document.addEventListener('keydown', (e) => {
       // Ctrl+S to save
@@ -447,11 +957,72 @@
       }
     });
 
+    // Check onboarding status
+    checkOnboarding();
+
     // Check platform permissions
     checkPlatform();
 
     // Load snippets
     loadSnippets();
+
+    // Initial Lucide icon generation for static layout
+    if (window.lucide) {
+      window.lucide.createIcons();
+    }
+  }
+
+  async function checkAndShowConflicts() {
+    try {
+      const conflicts = await invoke('check_keyboard_conflicts');
+      
+      const settingsAlert = document.getElementById('settings-conflict-alert');
+      const settingsDesc = document.getElementById('settings-conflict-desc');
+      const wizardAlert = document.getElementById('wizard-conflict-alert');
+      const wizardDesc = document.getElementById('wizard-conflict-desc');
+      
+      let conflictText = '';
+      if (conflicts.hasAltSpaceConflict && conflicts.hasCtrlSemicolonConflict) {
+        conflictText = 'Os atalhos <strong>Alt+Espaço</strong> (menu de janela) e <strong>Ctrl+;</strong> (seletor de emojis do sistema) estão reservados pelo GNOME. Isso impedirá que você grave ou use esses atalhos.';
+      } else if (conflicts.hasAltSpaceConflict) {
+        conflictText = 'O atalho <strong>Alt+Espaço</strong> está reservado pelo GNOME (menu de janela). Isso impedirá que você grave ou use essa combinação.';
+      } else if (conflicts.hasCtrlSemicolonConflict) {
+        conflictText = 'O atalho <strong>Ctrl+;</strong> está reservado pelo GNOME/IBus (seletor de emojis do sistema). Isso impedirá que você grave ou use essa combinação.';
+      }
+      
+      if (conflictText) {
+        if (settingsAlert && settingsDesc) {
+          settingsDesc.innerHTML = conflictText;
+          settingsAlert.style.display = 'block';
+        }
+        if (wizardAlert && wizardDesc) {
+          wizardDesc.innerHTML = conflictText;
+          wizardAlert.style.display = 'block';
+        }
+      } else {
+        if (settingsAlert) settingsAlert.style.display = 'none';
+        if (wizardAlert) wizardAlert.style.display = 'none';
+      }
+    } catch (err) {
+      console.error('Failed to check shortcut conflicts:', err);
+    }
+  }
+
+  async function resolveAllConflicts() {
+    try {
+      const conflicts = await invoke('check_keyboard_conflicts');
+      if (conflicts.hasAltSpaceConflict) {
+        await invoke('resolve_keyboard_conflict', { conflictType: 'alt-space' });
+      }
+      if (conflicts.hasCtrlSemicolonConflict) {
+        await invoke('resolve_keyboard_conflict', { conflictType: 'ctrl-semicolon' });
+      }
+      showToast('Conflitos de sistema resolvidos!');
+      await checkAndShowConflicts();
+    } catch (err) {
+      console.error('Failed to resolve keyboard conflicts:', err);
+      showToast('Erro ao resolver conflito: ' + err, 'error');
+    }
   }
 
   // Wait for DOM

@@ -13,6 +13,9 @@ fn main() {
         if std::env::var("GDK_BACKEND").is_err() {
             std::env::set_var("GDK_BACKEND", "x11");
         }
+        if let Ok(startup_id) = std::env::var("DESKTOP_STARTUP_ID") {
+            let _ = std::fs::write("/tmp/guepardosys-snip-startup-id", startup_id);
+        }
     }
 
     guepardosys_snip_lib::run()

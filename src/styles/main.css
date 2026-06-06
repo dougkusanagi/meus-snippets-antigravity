@@ -619,6 +619,12 @@ html, body {
   outline: none;
 }
 
+.btn-sm {
+  padding: 6px 12px;
+  font-size: 11px;
+  border-radius: 6px;
+}
+
 .btn:focus-visible {
   box-shadow: 0 0 0 3px rgba(245, 159, 0, 0.25);
 }
@@ -888,7 +894,6 @@ html, body {
   background: var(--bg-overlay);
   color: var(--text-primary);
   border-color: var(--border-strong);
-  transform: rotate(30deg);
 }
 
 .btn-settings.active {
@@ -927,4 +932,379 @@ html, body {
   color: var(--text-muted);
   margin-top: 6px;
 }
+
+/* ---------- Lucide Icons Sizing ---------- */
+.lucide {
+  width: 1.2em;
+  height: 1.2em;
+  stroke-width: 2.2;
+  display: inline-block;
+  vertical-align: middle;
+  stroke: currentColor;
+  fill: none;
+}
+
+/* Specific icon overrides for manager layout */
+.search-icon .lucide {
+  width: 14px;
+  height: 14px;
+}
+
+.empty-icon .lucide {
+  width: 38px;
+  height: 38px;
+  color: var(--text-muted);
+  opacity: 0.35;
+}
+
+.btn-new-snippet span .lucide {
+  width: 14px;
+  height: 14px;
+  stroke-width: 2.5;
+  margin-right: 0;
+}
+
+.btn-settings .lucide {
+  width: 16px;
+  height: 16px;
+  transition: transform var(--transition-fast);
+}
+
+.banner-icon .lucide {
+  width: 20px;
+  height: 20px;
+  color: var(--accent);
+}
+
+.empty-state-icon .lucide {
+  width: 52px;
+  height: 52px;
+  stroke-width: 1.5;
+  color: var(--text-muted);
+  opacity: 0.25;
+}
+
+.btn .lucide,
+.btn-new-snippet .lucide {
+  width: 14px;
+  height: 14px;
+  stroke-width: 2.2;
+}
+
+.btn-close-banner .lucide {
+  width: 16px;
+  height: 16px;
+  stroke-width: 2;
+}
+
+/* ---------- Onboarding Wizard Overlay & Animations ---------- */
+.wizard-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(4, 5, 8, 0.88);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+  z-index: 9999;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  animation: wizardFadeIn 300ms ease-out forwards;
+}
+
+.wizard-overlay.visible {
+  display: flex;
+}
+
+@keyframes wizardFadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.wizard-card {
+  width: 520px;
+  max-width: 90%;
+  background: radial-gradient(circle at top left, var(--bg-surface) 0%, var(--bg-raised) 100%);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.65), 0 0 40px rgba(245, 159, 0, 0.03);
+  border-radius: var(--radius-xl);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+}
+
+.wizard-card::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 3px;
+  background: var(--accent-gradient);
+}
+
+.wizard-progress {
+  display: flex;
+  height: 4px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.wizard-progress-bar {
+  height: 100%;
+  background: var(--accent-gradient);
+  transition: width var(--transition-smooth);
+}
+
+.wizard-content {
+  padding: 40px 48px;
+  flex: 1;
+  min-height: 290px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+}
+
+.wizard-step {
+  display: none;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  width: 100%;
+  animation: wizardStepIn 400ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.wizard-step.active {
+  display: flex;
+}
+
+@keyframes wizardStepIn {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.wizard-step-icon {
+  width: 60px;
+  height: 60px;
+  border-radius: var(--radius-lg);
+  background: rgba(245, 159, 0, 0.1);
+  border: 1px solid rgba(245, 159, 0, 0.22);
+  color: var(--accent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 24px;
+  margin-bottom: 24px;
+  box-shadow: var(--accent-glow);
+}
+
+.wizard-step-icon .lucide {
+  width: 26px;
+  height: 26px;
+  stroke-width: 2.2;
+}
+
+.wizard-step h2 {
+  font-size: 20px;
+  font-weight: 700;
+  margin-bottom: 12px;
+  color: var(--text-primary);
+  letter-spacing: -0.01em;
+}
+
+.wizard-step p {
+  font-size: 13.5px;
+  color: var(--text-secondary);
+  line-height: 1.6;
+  margin-bottom: 24px;
+  max-width: 420px;
+}
+
+.wizard-step .illustration-graphic {
+  margin: 12px 0 16px;
+}
+
+.wizard-permission-box {
+  background: rgba(0, 0, 0, 0.2);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: 20px;
+  text-align: left;
+  margin-bottom: 20px;
+}
+
+.wizard-permission-title {
+  font-size: 13px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--accent);
+  margin-bottom: 8px;
+}
+
+.wizard-permission-desc {
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+  margin-bottom: 16px;
+}
+
+.wizard-permission-desc strong {
+  color: var(--text-primary);
+}
+
+.wizard-permission-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.wizard-footer {
+  padding: 20px 48px 36px;
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  border-top: 1px solid rgba(255, 255, 255, 0.02);
+}
+
+.wizard-footer .btn {
+  min-width: 110px;
+}
+
+/* ---------- GNOME Remote Desktop Mockup ---------- */
+.gnome-dialog-mockup {
+  background: #242424;
+  border: 1px solid #3d3d3d;
+  border-radius: 12px;
+  width: 100%;
+  max-width: 420px;
+  margin: 16px auto;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+  font-family: system-ui, -apple-system, sans-serif;
+  color: #ffffff;
+  overflow: hidden;
+  font-size: 13px;
+  user-select: none;
+}
+
+.gnome-dialog-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 16px;
+  background: #1e1e1e;
+  border-bottom: 1px solid #2d2d2d;
+}
+
+.gnome-btn-cancel {
+  background: #3a3a3a;
+  color: #ffffff;
+  padding: 6px 12px;
+  border-radius: 6px;
+  font-size: 12px;
+  cursor: pointer;
+  font-weight: 500;
+  transition: background 0.2s;
+}
+
+.gnome-btn-cancel:hover {
+  background: #464646;
+}
+
+.gnome-dialog-title {
+  font-weight: 700;
+  font-size: 13px;
+  color: #ffffff;
+}
+
+.gnome-btn-share {
+  background: #3584e4;
+  color: #ffffff;
+  padding: 6px 12px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: opacity 0.2s, background 0.2s;
+}
+
+.gnome-btn-share.disabled {
+  background: #3a3a3a;
+  color: #8d8d8d;
+  cursor: not-allowed;
+  font-weight: normal;
+}
+
+.gnome-dialog-body {
+  padding: 24px 20px;
+  background: #242424;
+}
+
+.gnome-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 14px 16px;
+  background: #2d2d2d;
+  border-radius: 8px;
+  border: 2px solid transparent;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+.gnome-row.focus-ring {
+  border-color: #3584e4;
+  box-shadow: 0 0 0 1px #3584e4;
+}
+
+.gnome-row-label {
+  font-weight: 500;
+  color: #ffffff;
+}
+
+/* GNOME switch toggle */
+.gnome-toggle {
+  width: 46px;
+  height: 26px;
+  background: #5e5c64;
+  border-radius: 13px;
+  position: relative;
+  cursor: pointer;
+  transition: background 0.25s;
+}
+
+.gnome-toggle.active {
+  background: #3584e4;
+}
+
+.gnome-toggle-thumb {
+  width: 20px;
+  height: 20px;
+  background: #ffffff;
+  border-radius: 50%;
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  transition: transform 0.25s;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+}
+
+.gnome-toggle.active .gnome-toggle-thumb {
+  transform: translateX(20px);
+}
+
+.gnome-mockup-guide {
+  font-size: 11px;
+  color: var(--text-muted);
+  text-align: center;
+  margin-top: 8px;
+  font-style: italic;
+}
+
+
 
