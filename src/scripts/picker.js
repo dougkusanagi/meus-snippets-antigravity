@@ -10,11 +10,15 @@
   let filtered = [];
   let selectedIndex = 0;
   let isMac = false;
+  let pendingSnippet = null;
 
   // ---- DOM Elements ----
   const search = document.getElementById('picker-search');
   const list = document.getElementById('picker-list');
   const pickerContainer = document.querySelector('.picker');
+  const variableOverlay = document.getElementById('variable-overlay');
+  const variableForm = document.getElementById('variable-form');
+  const variableFields = document.getElementById('variable-fields');
 
 
 
@@ -45,11 +49,20 @@
     if (query) {
       filtered = snippets.filter(s =>
         s.trigger.toLowerCase().startsWith(query) ||
-        s.name.toLowerCase().includes(query)
+        s.name.toLowerCase().includes(query) ||
+        (s.category || '').toLowerCase().includes(query) ||
+        (s.tags || []).some(tag => tag.toLowerCase().includes(query))
       );
     } else {
       filtered = [...snippets];
     }
+    filtered.sort((a, b) => {
+      if (a.favorite !== b.favorite) return a.favorite ? -1 : 1;
+      if ((b.usage_count || 0) !== (a.usage_count || 0)) {
+        return (b.usage_count || 0) - (a.usage_count || 0);
+      }
+      return a.name.localeCompare(b.name, 'pt-BR');
+    });
 
     selectedIndex = Math.min(selectedIndex, Math.max(0, filtered.length - 1));
     render();
@@ -69,7 +82,7 @@
         <div class="picker-item ${i === selectedIndex ? 'selected' : ''}"
              data-index="${i}" data-id="${s.id}">
           <div class="item-left">
-            <span class="item-icon"><i data-lucide="zap"></i></span>
+            <span class="item-icon"><i data-lucide="${s.favorite ? 'star' : 'zap'}"></i></span>
             <span class="item-name">${escapeHtml(s.name)}</span>
           </div>
           <div class="item-right">
@@ -122,6 +135,32 @@
 
     const snippet = filtered[selectedIndex];
     try {
+      const variables = await invoke('get_snippet_variables', { id: snippet.id });
+      if (variables.length > 0) {
+        pendingSnippet = snippet;
+        variableFields.innerHTML = '';
+        variables.forEach((name, index) => {
+          const label = document.createElement('label');
+          label.textContent = name;
+          const input = document.createElement('input');
+          input.name = name;
+          input.required = true;
+          input.autocomplete = 'off';
+          label.appendChild(input);
+          variableFields.appendChild(label);
+          if (index === 0) setTimeout(() => input.focus(), 0);
+        });
+        variableOverlay.hidden = false;
+        return;
+      }
+    } catch (err) {
+      console.error('Failed to inspect variables:', err);
+    }
+    await executeSnippet(snippet, {});
+  }
+
+  async function executeSnippet(snippet, variables) {
+    try {
       // 1. Hide picker window immediately to return focus to the previous application
       await invoke('hide_picker');
     } catch (err) {
@@ -133,7 +172,7 @@
 
     try {
       // 3. Execute macro without deleting trigger (since we didn't type it in the target app)
-      await invoke('execute_macro', { id: snippet.id, deleteTrigger: false });
+      await invoke('execute_macro', { id: snippet.id, deleteTrigger: false, variables });
     } catch (err) {
       console.error('Failed to execute macro:', err);
     }
@@ -178,8 +217,33 @@
       filterAndRender();
     });
 
+    variableForm.addEventListener('submit', async event => {
+      event.preventDefault();
+      if (!pendingSnippet) return;
+      const variables = Object.fromEntries(new FormData(variableForm).entries());
+      const snippet = pendingSnippet;
+      pendingSnippet = null;
+      variableOverlay.hidden = true;
+      await executeSnippet(snippet, variables);
+    });
+    document.getElementById('btn-cancel-variables').addEventListener('click', () => {
+      pendingSnippet = null;
+      variableOverlay.hidden = true;
+      search.focus();
+    });
+
     // Keyboard navigation
     document.addEventListener('keydown', (e) => {
+      if (!variableOverlay.hidden) {
+        if (e.key === 'Escape') {
+          e.preventDefault();
+          pendingSnippet = null;
+          variableOverlay.hidden = true;
+          search.focus();
+        }
+        return;
+      }
+
       // Alt+1 to Alt+9 quick selection
       if (e.altKey && e.key >= '1' && e.key <= '9') {
         const num = parseInt(e.key, 10);

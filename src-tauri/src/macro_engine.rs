@@ -1,16 +1,19 @@
 use crate::snippet_store::MacroAction;
-use enigo::{Enigo, Key, Keyboard, Settings, Direction};
+use enigo::{Direction, Enigo, Key, Keyboard, Settings};
+use std::collections::HashMap;
 use std::thread;
 use std::time::Duration;
 use tauri_plugin_clipboard_manager::ClipboardExt;
+use uuid::Uuid;
 
 #[cfg(target_os = "linux")]
 use evdev::uinput::VirtualDevice;
 #[cfg(target_os = "linux")]
-use evdev::{AttributeSet, KeyCode, InputEvent, EventType};
+use evdev::{AttributeSet, EventType, InputEvent, KeyCode};
 
 #[cfg(target_os = "linux")]
-static UINPUT_DEVICE: std::sync::OnceLock<std::sync::Mutex<Option<VirtualDevice>>> = std::sync::OnceLock::new();
+static UINPUT_DEVICE: std::sync::OnceLock<std::sync::Mutex<Option<VirtualDevice>>> =
+    std::sync::OnceLock::new();
 
 #[cfg(target_os = "linux")]
 fn get_keyboard_capabilities() -> AttributeSet<KeyCode> {
@@ -24,7 +27,7 @@ fn get_keyboard_capabilities() -> AttributeSet<KeyCode> {
     keys.insert(KeyCode::KEY_RIGHTSHIFT);
     keys.insert(KeyCode::KEY_RIGHTALT);
     keys.insert(KeyCode::KEY_RIGHTMETA);
-    
+
     // Add standard key range
     for code in 1..255 {
         keys.insert(KeyCode::new(code));
@@ -42,7 +45,10 @@ fn get_uinput_device() -> &'static std::sync::Mutex<Option<VirtualDevice>> {
             .and_then(|_file| {
                 let keys = get_keyboard_capabilities();
                 match evdev::uinput::VirtualDevice::builder()
-                    .and_then(|b| b.name("Guepardosys Snippet Virtual Keyboard").with_keys(&keys))
+                    .and_then(|b| {
+                        b.name("Guepardosys Snippet Virtual Keyboard")
+                            .with_keys(&keys)
+                    })
                     .and_then(|b| b.build())
                 {
                     Ok(dev) => {
@@ -156,64 +162,157 @@ fn map_modifier(modifier: &str) -> Option<Key> {
 
 fn paste_text(text: &str, app: &tauri::AppHandle, enigo: &mut Enigo) -> Result<(), String> {
     let clipboard = app.clipboard();
-    
+
     // Save original clipboard content
     let original_text = clipboard.read_text().ok();
-    
+
     // Write the new text to clipboard
     clipboard
         .write_text(text.to_string())
         .map_err(|e| format!("Failed to write to clipboard: {}", e))?;
-        
+
     // Wait a tiny bit for clipboard registration
     thread::sleep(Duration::from_millis(20));
-    
+
     // Press Ctrl+V (or Cmd+V on macOS)
     #[cfg(target_os = "macos")]
     let modifier = Key::Meta;
     #[cfg(not(target_os = "macos"))]
     let modifier = Key::Control;
-    
+
     enigo
         .key(modifier, Direction::Press)
         .map_err(|e| format!("Failed to press modifier: {}", e))?;
-        
+
     enigo
         .key(Key::Unicode('v'), Direction::Click)
         .map_err(|e| format!("Failed to click V: {}", e))?;
-        
+
     enigo
         .key(modifier, Direction::Release)
         .map_err(|e| format!("Failed to release modifier: {}", e))?;
-        
+
     // Wait for the paste event to be processed by the target application
     thread::sleep(Duration::from_millis(60));
-    
+
     // Restore original clipboard content
     if let Some(orig) = original_text {
         let _ = clipboard.write_text(orig);
     } else {
         let _ = clipboard.clear();
     }
-    
+
+    Ok(())
+}
+
+struct ExecutionVariables {
+    date: String,
+    time: String,
+    datetime: String,
+    clipboard: String,
+    uuid: String,
+}
+
+struct PreparedMacro {
+    actions: Vec<MacroAction>,
+    cursor_back: usize,
+}
+
+impl ExecutionVariables {
+    fn capture(app: &tauri::AppHandle) -> Self {
+        let now = chrono::Local::now();
+        Self {
+            date: now.format("%d/%m/%Y").to_string(),
+            time: now.format("%H:%M:%S").to_string(),
+            datetime: now.format("%d/%m/%Y %H:%M:%S").to_string(),
+            clipboard: app.clipboard().read_text().unwrap_or_default(),
+            uuid: Uuid::new_v4().to_string(),
+        }
+    }
+}
+
+fn resolve_text(
+    text: &str,
+    execution: &ExecutionVariables,
+    variables: &HashMap<String, String>,
+) -> (String, Option<usize>) {
+    let mut resolved = text
+        .replace("{{date}}", &execution.date)
+        .replace("{{time}}", &execution.time)
+        .replace("{{datetime}}", &execution.datetime)
+        .replace("{{clipboard}}", &execution.clipboard)
+        .replace("{{uuid}}", &execution.uuid);
+
+    for (name, value) in variables {
+        resolved = resolved.replace(&format!("{{{{{name}}}}}"), value);
+    }
+
+    let cursor_position = resolved
+        .find("{{cursor}}")
+        .map(|byte_index| resolved[..byte_index].chars().count());
+    resolved = resolved.replace("{{cursor}}", "");
+    (resolved, cursor_position)
+}
+
+fn prepare_actions(
+    actions: &[MacroAction],
+    execution: &ExecutionVariables,
+    variables: &HashMap<String, String>,
+) -> PreparedMacro {
+    let mut prepared = Vec::with_capacity(actions.len());
+    let mut cursor_seen = false;
+    let mut cursor_back = 0;
+
+    for action in actions {
+        match action {
+            MacroAction::Text { value } => {
+                let (resolved, cursor_position) = resolve_text(value, execution, variables);
+                if cursor_seen {
+                    cursor_back += resolved.chars().count();
+                } else if let Some(position) = cursor_position {
+                    cursor_seen = true;
+                    cursor_back += resolved.chars().count().saturating_sub(position);
+                }
+                prepared.push(MacroAction::Text { value: resolved });
+            }
+            other => prepared.push(other.clone()),
+        }
+    }
+
+    PreparedMacro {
+        actions: prepared,
+        cursor_back,
+    }
+}
+
+fn move_cursor_back(enigo: &mut Enigo, count: usize) -> Result<(), String> {
+    for _ in 0..count {
+        enigo
+            .key(Key::LeftArrow, Direction::Click)
+            .map_err(|e| format!("Failed to move cursor: {e}"))?;
+    }
     Ok(())
 }
 
 #[cfg(target_os = "linux")]
-fn paste_text_uinput(text: &str, app: &tauri::AppHandle, device: &mut VirtualDevice) -> Result<(), String> {
+fn paste_text_uinput(
+    text: &str,
+    app: &tauri::AppHandle,
+    device: &mut VirtualDevice,
+) -> Result<(), String> {
     let clipboard = app.clipboard();
-    
+
     // Save original clipboard content
     let original_text = clipboard.read_text().ok();
-    
+
     // Write the new text to clipboard
     clipboard
         .write_text(text.to_string())
         .map_err(|e| format!("Failed to write to clipboard: {}", e))?;
-        
+
     // Wait a tiny bit for clipboard registration
     thread::sleep(Duration::from_millis(20));
-    
+
     // Press Ctrl+V via uinput
     let ctrl_down = InputEvent::new(EventType::KEY.0, KeyCode::KEY_LEFTCTRL.code(), 1);
     let v_down = InputEvent::new(EventType::KEY.0, KeyCode::KEY_V.code(), 1);
@@ -221,22 +320,28 @@ fn paste_text_uinput(text: &str, app: &tauri::AppHandle, device: &mut VirtualDev
     let ctrl_up = InputEvent::new(EventType::KEY.0, KeyCode::KEY_LEFTCTRL.code(), 0);
     let sync = InputEvent::new(evdev::EventType::SYNCHRONIZATION.0, 0, 0);
 
-    device.emit(&[ctrl_down, sync.clone()]).map_err(|e| e.to_string())?;
-    device.emit(&[v_down, sync.clone()]).map_err(|e| e.to_string())?;
+    device
+        .emit(&[ctrl_down, sync.clone()])
+        .map_err(|e| e.to_string())?;
+    device
+        .emit(&[v_down, sync.clone()])
+        .map_err(|e| e.to_string())?;
     std::thread::sleep(Duration::from_millis(5));
-    device.emit(&[v_up, sync.clone()]).map_err(|e| e.to_string())?;
+    device
+        .emit(&[v_up, sync.clone()])
+        .map_err(|e| e.to_string())?;
     device.emit(&[ctrl_up, sync]).map_err(|e| e.to_string())?;
-    
+
     // Wait for the paste event to be processed by the target application
     thread::sleep(Duration::from_millis(60));
-    
+
     // Restore original clipboard content
     if let Some(orig) = original_text {
         let _ = clipboard.write_text(orig);
     } else {
         let _ = clipboard.clear();
     }
-    
+
     Ok(())
 }
 
@@ -254,7 +359,11 @@ fn execute_uinput(actions: &[MacroAction], app: &tauri::AppHandle) -> Result<(),
                 // Press modifier keys down
                 let mods: Vec<KeyCode> = modifiers
                     .as_ref()
-                    .map(|m| m.iter().filter_map(|name| map_modifier_to_evdev(name)).collect())
+                    .map(|m| {
+                        m.iter()
+                            .filter_map(|name| map_modifier_to_evdev(name))
+                            .collect()
+                    })
                     .unwrap_or_default();
 
                 for modifier_key in &mods {
@@ -269,7 +378,9 @@ fn execute_uinput(actions: &[MacroAction], app: &tauri::AppHandle) -> Result<(),
                     let ev_up = InputEvent::new(EventType::KEY.0, main_key.code(), 0);
                     let sync = InputEvent::new(evdev::EventType::SYNCHRONIZATION.0, 0, 0);
 
-                    device.emit(&[ev_down, sync.clone()]).map_err(|e| e.to_string())?;
+                    device
+                        .emit(&[ev_down, sync.clone()])
+                        .map_err(|e| e.to_string())?;
                     std::thread::sleep(Duration::from_millis(5));
                     device.emit(&[ev_up, sync]).map_err(|e| e.to_string())?;
                 }
@@ -281,6 +392,9 @@ fn execute_uinput(actions: &[MacroAction], app: &tauri::AppHandle) -> Result<(),
                     device.emit(&[ev, sync]).map_err(|e| e.to_string())?;
                 }
             }
+            MacroAction::Delay { milliseconds } => {
+                thread::sleep(Duration::from_millis(*milliseconds));
+            }
         }
 
         // Small delay between actions for reliability
@@ -291,11 +405,25 @@ fn execute_uinput(actions: &[MacroAction], app: &tauri::AppHandle) -> Result<(),
 }
 
 /// Executes a sequence of macro actions using enigo for input simulation and clipboard paste for text blocks
-pub fn execute(actions: &[MacroAction], app: &tauri::AppHandle) -> Result<(), String> {
+pub fn execute(
+    actions: &[MacroAction],
+    app: &tauri::AppHandle,
+    variables: &HashMap<String, String>,
+) -> Result<(), String> {
+    let execution_variables = ExecutionVariables::capture(app);
+    let prepared = prepare_actions(actions, &execution_variables, variables);
+
     #[cfg(target_os = "linux")]
     {
         if get_uinput_device().lock().unwrap().is_some() {
-            return execute_uinput(actions, app);
+            let mut actions = prepared.actions;
+            for _ in 0..prepared.cursor_back {
+                actions.push(MacroAction::Key {
+                    key: "Left".to_string(),
+                    modifiers: None,
+                });
+            }
+            return execute_uinput(&actions, app);
         }
     }
 
@@ -309,7 +437,7 @@ pub fn execute(actions: &[MacroAction], app: &tauri::AppHandle) -> Result<(), St
         let _ = enigo.key(Key::Shift, Direction::Release);
     }
 
-    for action in actions {
+    for action in &prepared.actions {
         match action {
             MacroAction::Text { value } => {
                 paste_text(value, app, &mut enigo)?;
@@ -341,13 +469,83 @@ pub fn execute(actions: &[MacroAction], app: &tauri::AppHandle) -> Result<(), St
                         .map_err(|e| format!("Failed to release modifier: {}", e))?;
                 }
             }
+            MacroAction::Delay { milliseconds } => {
+                thread::sleep(Duration::from_millis(*milliseconds));
+            }
         }
 
         // Small delay between actions for reliability
         thread::sleep(Duration::from_millis(15));
     }
 
+    move_cursor_back(&mut enigo, prepared.cursor_back)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn execution_variables() -> ExecutionVariables {
+        ExecutionVariables {
+            date: "11/06/2026".to_string(),
+            time: "16:22:36".to_string(),
+            datetime: "11/06/2026 16:22:36".to_string(),
+            clipboard: "texto copiado".to_string(),
+            uuid: "uuid-fixo".to_string(),
+        }
+    }
+
+    #[test]
+    fn resolves_execution_variables_consistently_across_text_actions() {
+        let actions = vec![
+            MacroAction::Text {
+                value: "{{clipboard}},{{uuid}}".to_string(),
+            },
+            MacroAction::Text {
+                value: ",{{uuid}}".to_string(),
+            },
+        ];
+
+        let prepared = prepare_actions(&actions, &execution_variables(), &HashMap::new());
+        assert_eq!(
+            prepared.actions,
+            vec![
+                MacroAction::Text {
+                    value: "texto copiado,uuid-fixo".to_string()
+                },
+                MacroAction::Text {
+                    value: ",uuid-fixo".to_string()
+                }
+            ]
+        );
+    }
+
+    #[test]
+    fn applies_cursor_position_after_all_text_actions() {
+        let actions = vec![
+            MacroAction::Text {
+                value: "Olá {{cursor}}Fulano".to_string(),
+            },
+            MacroAction::Text {
+                value: " de Tal".to_string(),
+            },
+        ];
+
+        let prepared = prepare_actions(&actions, &execution_variables(), &HashMap::new());
+        assert_eq!(prepared.cursor_back, "Fulano de Tal".chars().count());
+        assert_eq!(
+            prepared.actions,
+            vec![
+                MacroAction::Text {
+                    value: "Olá Fulano".to_string()
+                },
+                MacroAction::Text {
+                    value: " de Tal".to_string()
+                }
+            ]
+        );
+    }
 }
 
 /// Deletes N characters before the cursor (to remove trigger text)
@@ -359,8 +557,10 @@ pub fn delete_trigger(char_count: usize) -> Result<(), String> {
                 let key_down = InputEvent::new(EventType::KEY.0, KeyCode::KEY_BACKSPACE.code(), 1);
                 let key_up = InputEvent::new(EventType::KEY.0, KeyCode::KEY_BACKSPACE.code(), 0);
                 let sync = InputEvent::new(evdev::EventType::SYNCHRONIZATION.0, 0, 0);
-                
-                device.emit(&[key_down, sync.clone()]).map_err(|e| e.to_string())?;
+
+                device
+                    .emit(&[key_down, sync.clone()])
+                    .map_err(|e| e.to_string())?;
                 std::thread::sleep(Duration::from_millis(5));
                 device.emit(&[key_up, sync]).map_err(|e| e.to_string())?;
                 std::thread::sleep(Duration::from_millis(5));

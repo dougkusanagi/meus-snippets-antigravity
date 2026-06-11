@@ -5,12 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>guepardosys-snip — Snippet Manager</title>
     <link rel="icon" type="image/png" href="assets/guepardosys-snip-logo.png" />
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
     <link rel="stylesheet" href="styles/main.css" />
-    <!-- Lucide Icons -->
-    <script src="https://unpkg.com/lucide@latest"></script>
+    <script src="vendor/lucide.js"></script>
   </head>
 
   <body>
@@ -35,6 +31,16 @@
               autocomplete="off"
               spellcheck="false"
             />
+          </div>
+          <div class="sidebar-filters">
+            <select id="category-filter" class="compact-select" aria-label="Filtrar por categoria">
+              <option value="">Todas as categorias</option>
+            </select>
+            <select id="sort-order" class="compact-select" aria-label="Ordenar snippets">
+              <option value="recent">Mais recentes</option>
+              <option value="used">Mais usados</option>
+              <option value="name">Nome</option>
+            </select>
           </div>
         </div>
 
@@ -84,6 +90,15 @@
           <div class="editor-header">
             <h2 id="editor-title">Editar Snippet</h2>
             <div class="editor-actions">
+              <button id="btn-favorite" class="btn btn-secondary" type="button" title="Favoritar">
+                <i data-lucide="star"></i>
+              </button>
+              <button id="btn-duplicate" class="btn btn-secondary" type="button">
+                <i data-lucide="copy"></i> Duplicar
+              </button>
+              <button id="btn-preview" class="btn btn-secondary" type="button">
+                <i data-lucide="eye"></i> Preview
+              </button>
               <button id="btn-delete" class="btn btn-danger" type="button" style="display: none;">
                 <i data-lucide="trash-2"></i> Remover
               </button>
@@ -106,6 +121,17 @@
             />
           </div>
 
+          <div class="form-row">
+            <div class="form-group">
+              <label for="input-category">Categoria</label>
+              <input type="text" id="input-category" class="form-input" placeholder="Ex.: Trabalho" maxlength="100" />
+            </div>
+            <div class="form-group">
+              <label for="input-tags">Tags</label>
+              <input type="text" id="input-tags" class="form-input" placeholder="email, suporte, vendas" />
+            </div>
+          </div>
+
           <!-- Name -->
           <div class="form-group">
             <label for="input-name">Nome</label>
@@ -123,6 +149,11 @@
           <div class="macro-editor-container">
             <label class="macro-editor-label">Ações (Macro)</label>
             <div id="macro-editor-container"></div>
+            <p class="form-help-text variable-help">
+              Use os botões acima ou digite <code>{{</code> para abrir a lista. Campos personalizados,
+              como <code>{{nome}}</code>, serão solicitados no picker. O identificador único serve para
+              protocolos; a posição do cursor define onde o cursor ficará após a inserção.
+            </p>
           </div>
         </div>
 
@@ -166,11 +197,29 @@
               <i data-lucide="help-circle"></i> Abrir Assistente de Configuração
             </button>
           </div>
+
+          <div class="form-group settings-section">
+            <label>Backup e restauração</label>
+            <p class="form-help-text">Exporte todos os snippets em JSON ou importe um backup.</p>
+            <div class="settings-actions">
+              <button id="btn-export" class="btn btn-secondary" type="button"><i data-lucide="download"></i> Exportar JSON</button>
+              <button id="btn-import" class="btn btn-secondary" type="button"><i data-lucide="upload"></i> Importar JSON</button>
+              <input id="input-import-file" type="file" accept="application/json,.json" hidden />
+            </div>
+          </div>
         </div>
       </main>
     </div>
 
     <div id="toast-container" class="toast-container"></div>
+
+    <dialog id="preview-dialog" class="app-dialog">
+      <div class="dialog-header">
+        <h3>Preview da macro</h3>
+        <button id="btn-close-preview" class="btn-close-banner" type="button" aria-label="Fechar"><i data-lucide="x"></i></button>
+      </div>
+      <pre id="preview-content"></pre>
+    </dialog>
 
     <!-- Onboarding Setup Wizard Overlay -->
     <div id="wizard-overlay" class="wizard-overlay">

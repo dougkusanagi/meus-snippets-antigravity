@@ -9,6 +9,8 @@
   let snippets = [];
   let selectedId = null;
   let isNewSnippet = false;
+  let isDirty = false;
+  let currentFavorite = false;
 
   // ---- DOM refs ----
   const sidebar = () => document.getElementById('snippet-list');
@@ -18,8 +20,15 @@
   const editorTitle = () => document.getElementById('editor-title');
   const triggerInput = () => document.getElementById('input-trigger');
   const nameInput = () => document.getElementById('input-name');
+  const categoryInput = () => document.getElementById('input-category');
+  const tagsInput = () => document.getElementById('input-tags');
+  const categoryFilter = () => document.getElementById('category-filter');
+  const sortOrder = () => document.getElementById('sort-order');
   const btnSave = () => document.getElementById('btn-save');
   const btnDelete = () => document.getElementById('btn-delete');
+  const btnDuplicate = () => document.getElementById('btn-duplicate');
+  const btnFavorite = () => document.getElementById('btn-favorite');
+  const btnPreview = () => document.getElementById('btn-preview');
   const btnNew = () => document.getElementById('btn-new-snippet');
   const toastContainer = () => document.getElementById('toast-container');
   const permissionBanner = () => document.getElementById('permission-banner');
@@ -61,21 +70,41 @@
       console.error('Failed to load snippets:', err);
       snippets = [];
     }
+    updateCategoryFilter();
     renderList();
+  }
+
+  function updateCategoryFilter() {
+    const select = categoryFilter();
+    const selected = select.value;
+    const categories = [...new Set(snippets.map(s => s.category).filter(Boolean))]
+      .sort((a, b) => a.localeCompare(b, 'pt-BR'));
+    select.innerHTML = '<option value="">Todas as categorias</option>' +
+      categories.map(category => `<option value="${escapeHtml(category)}">${escapeHtml(category)}</option>`).join('');
+    select.value = categories.includes(selected) ? selected : '';
   }
 
   // ---- Render snippet list ----
   function renderList() {
     const list = sidebar();
     const filter = (searchInput().value || '').toLowerCase().trim();
+    const category = categoryFilter().value;
 
-    let filtered = snippets;
+    let filtered = snippets.filter(snippet => !category || snippet.category === category);
     if (filter) {
-      filtered = snippets.filter(s =>
+      filtered = filtered.filter(s =>
         s.trigger.toLowerCase().includes(filter) ||
-        s.name.toLowerCase().includes(filter)
+        s.name.toLowerCase().includes(filter) ||
+        (s.category || '').toLowerCase().includes(filter) ||
+        (s.tags || []).some(tag => tag.toLowerCase().includes(filter))
       );
     }
+    filtered.sort((a, b) => {
+      if (a.favorite !== b.favorite) return a.favorite ? -1 : 1;
+      if (sortOrder().value === 'used') return (b.usage_count || 0) - (a.usage_count || 0);
+      if (sortOrder().value === 'name') return a.name.localeCompare(b.name, 'pt-BR');
+      return (b.updated_at || b.created_at).localeCompare(a.updated_at || a.created_at);
+    });
 
     if (filtered.length === 0) {
       list.innerHTML = `
@@ -93,8 +122,9 @@
     list.innerHTML = filtered.map(s => `
       <div class="snippet-item ${s.id === selectedId ? 'active' : ''}"
            data-id="${s.id}">
-        <div class="snippet-trigger">${escapeHtml(s.trigger)}</div>
+        <div class="snippet-trigger">${s.favorite ? '★ ' : ''}${escapeHtml(s.trigger)}</div>
         <div class="snippet-name">${escapeHtml(s.name)}</div>
+        <div class="snippet-meta">${escapeHtml(s.category || 'Sem categoria')} · ${s.usage_count || 0} usos</div>
       </div>
     `).join('');
 
@@ -138,6 +168,7 @@
 
   // ---- Select snippet ----
   function selectSnippet(id) {
+    if (isDirty && !window.confirm('Descartar alterações não salvas?')) return;
     const snippet = snippets.find(s => s.id === id);
     if (!snippet) return;
 
@@ -149,10 +180,16 @@
     editorTitle().textContent = 'Editar Snippet';
     triggerInput().value = snippet.trigger;
     nameInput().value = snippet.name;
+    categoryInput().value = snippet.category || '';
+    tagsInput().value = (snippet.tags || []).join(', ');
+    currentFavorite = Boolean(snippet.favorite);
+    updateFavoriteButton();
     btnDelete().style.display = 'inline-flex';
+    btnDuplicate().style.display = 'inline-flex';
 
     // Load actions into macro editor
     window.macroEditor.deserialize(snippet.actions);
+    isDirty = false;
 
     // Update active state in list
     renderList();
@@ -160,6 +197,7 @@
 
   // ---- New snippet ----
   function newSnippet() {
+    if (isDirty && !window.confirm('Descartar alterações não salvas?')) return;
     selectedId = null;
     isNewSnippet = true;
 
@@ -168,9 +206,15 @@
     editorTitle().textContent = 'Novo Snippet';
     triggerInput().value = '';
     nameInput().value = '';
+    categoryInput().value = '';
+    tagsInput().value = '';
+    currentFavorite = false;
+    updateFavoriteButton();
     btnDelete().style.display = 'none';
+    btnDuplicate().style.display = 'none';
 
     window.macroEditor.clear();
+    isDirty = false;
     triggerInput().focus();
 
     renderList();
@@ -180,6 +224,8 @@
   async function saveSnippet() {
     const trigger = triggerInput().value.trim();
     const name = nameInput().value.trim();
+    const category = categoryInput().value.trim();
+    const tags = tagsInput().value.split(',').map(tag => tag.trim()).filter(Boolean);
 
     if (!trigger) {
       showToast('O gatilho é obrigatório!', 'error');
@@ -194,15 +240,22 @@
     }
 
     const actions = window.macroEditor.serialize();
+    if (actions.length === 0) {
+      showToast('Adicione pelo menos uma ação!', 'error');
+      return;
+    }
 
     try {
       if (isNewSnippet) {
-        const newId = await invoke('add_snippet', {
+        const created = await invoke('add_snippet', {
           trigger,
           name,
+          category,
+          tags,
+          favorite: currentFavorite,
           actions,
         });
-        selectedId = newId;
+        selectedId = created.id;
         isNewSnippet = false;
         showToast('Snippet criado com sucesso!');
       } else {
@@ -210,6 +263,9 @@
           id: selectedId,
           trigger,
           name,
+          category,
+          tags,
+          favorite: currentFavorite,
           actions,
         });
         showToast('Snippet atualizado!');
@@ -218,6 +274,8 @@
       await loadSnippets();
       editorTitle().textContent = 'Editar Snippet';
       btnDelete().style.display = 'inline-flex';
+      btnDuplicate().style.display = 'inline-flex';
+      isDirty = false;
     } catch (err) {
       console.error('Failed to save snippet:', err);
       showToast('Erro ao salvar: ' + err, 'error');
@@ -227,6 +285,8 @@
   // ---- Delete snippet ----
   async function deleteSnippet() {
     if (!selectedId) return;
+    const snippet = snippets.find(item => item.id === selectedId);
+    if (!window.confirm(`Remover "${snippet?.name || 'este snippet'}"? Esta ação não pode ser desfeita.`)) return;
 
     try {
       await invoke('delete_snippet', { id: selectedId });
@@ -243,8 +303,84 @@
     }
   }
 
+  function updateFavoriteButton() {
+    btnFavorite().classList.toggle('active', currentFavorite);
+    btnFavorite().title = currentFavorite ? 'Remover dos favoritos' : 'Adicionar aos favoritos';
+  }
+
+  async function toggleFavorite() {
+    currentFavorite = !currentFavorite;
+    updateFavoriteButton();
+    if (!selectedId || isNewSnippet) {
+      isDirty = true;
+      return;
+    }
+    try {
+      await invoke('set_snippet_favorite', { id: selectedId, favorite: currentFavorite });
+      await loadSnippets();
+    } catch (err) {
+      currentFavorite = !currentFavorite;
+      updateFavoriteButton();
+      showToast('Erro ao atualizar favorito: ' + err, 'error');
+    }
+  }
+
+  async function duplicateSnippet() {
+    if (!selectedId) return;
+    try {
+      const duplicate = await invoke('duplicate_snippet', { id: selectedId });
+      await loadSnippets();
+      selectSnippet(duplicate.id);
+      showToast('Snippet duplicado!');
+    } catch (err) {
+      showToast('Erro ao duplicar: ' + err, 'error');
+    }
+  }
+
+  function previewSnippet() {
+    const actions = window.macroEditor.serialize();
+    const lines = actions.map(action => {
+      if (action.type === 'text') return `Texto: ${action.value}`;
+      if (action.type === 'delay') return `Espera: ${action.milliseconds} ms`;
+      const modifiers = action.modifiers?.length ? action.modifiers.join('+') + '+' : '';
+      return `Tecla: ${modifiers}${action.key}`;
+    });
+    document.getElementById('preview-content').textContent = lines.join('\n') || 'Nenhuma ação.';
+    document.getElementById('preview-dialog').showModal();
+  }
+
+  async function exportSnippets() {
+    try {
+      const content = await invoke('export_snippets');
+      const blob = new Blob([content], { type: 'application/json' });
+      const link = document.createElement('a');
+      link.href = URL.createObjectURL(blob);
+      link.download = `guepardosys-snip-${new Date().toISOString().slice(0, 10)}.json`;
+      link.click();
+      URL.revokeObjectURL(link.href);
+      showToast('Backup exportado!');
+    } catch (err) {
+      showToast('Erro ao exportar: ' + err, 'error');
+    }
+  }
+
+  async function importSnippets(file) {
+    if (!file) return;
+    const replace = window.confirm('OK: substituir todos os snippets atuais. Cancelar: mesclar com os existentes.');
+    try {
+      const count = await invoke('import_snippets', { content: await file.text(), replace });
+      await loadSnippets();
+      showPanel('empty');
+      showToast(`${count} snippet(s) importado(s)!`);
+    } catch (err) {
+      showToast('Erro ao importar: ' + err, 'error');
+    }
+  }
+
   // ---- Settings Panel Logic ----
   async function showSettings() {
+    if (isDirty && !window.confirm('Descartar alterações não salvas?')) return;
+    isDirty = false;
     showPanel('settings');
     
     try {
@@ -932,8 +1068,37 @@
     btnNew().addEventListener('click', newSnippet);
     btnSave().addEventListener('click', saveSnippet);
     btnDelete().addEventListener('click', deleteSnippet);
+    btnDuplicate().addEventListener('click', duplicateSnippet);
+    btnFavorite().addEventListener('click', toggleFavorite);
+    btnPreview().addEventListener('click', previewSnippet);
     searchInput().addEventListener('input', renderList);
+    categoryFilter().addEventListener('change', renderList);
+    sortOrder().addEventListener('change', renderList);
     btnSettings().addEventListener('click', showSettings);
+    document.getElementById('btn-close-preview').addEventListener('click', () => {
+      document.getElementById('preview-dialog').close();
+    });
+    document.getElementById('btn-export').addEventListener('click', exportSnippets);
+    document.getElementById('btn-import').addEventListener('click', () => {
+      document.getElementById('input-import-file').click();
+    });
+    document.getElementById('input-import-file').addEventListener('change', event => {
+      importSnippets(event.target.files[0]);
+      event.target.value = '';
+    });
+
+    [triggerInput(), nameInput(), categoryInput(), tagsInput(), document.getElementById('macro-editor-container')]
+      .forEach(element => {
+        element.addEventListener('input', () => {
+          if (editorPanel().classList.contains('visible')) isDirty = true;
+        });
+      });
+    window.addEventListener('beforeunload', event => {
+      if (isDirty) {
+        event.preventDefault();
+        event.returnValue = '';
+      }
+    });
 
     // Setup gravador de atalho
     setupShortcutRecorder();

@@ -5,12 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>guepardosys-snip — Picker</title>
     <link rel="icon" type="image/png" href="assets/guepardosys-snip-logo.png" />
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
     <link rel="stylesheet" href="styles/picker.css" />
-    <!-- Lucide Icons -->
-    <script src="https://unpkg.com/lucide@latest"></script>
+    <script src="vendor/lucide.js"></script>
   </head>
 
   <body>
@@ -43,6 +39,17 @@
         <span><kbd>↑</kbd><kbd>↓</kbd> navegar</span>
         <span><kbd>⏎</kbd> selecionar</span>
         <span><kbd>Esc</kbd> fechar</span>
+      </div>
+
+      <div id="variable-overlay" class="variable-overlay" hidden>
+        <form id="variable-form" class="variable-card">
+          <h2>Preencha os campos</h2>
+          <div id="variable-fields"></div>
+          <div class="variable-actions">
+            <button id="btn-cancel-variables" type="button">Cancelar</button>
+            <button type="submit">Executar</button>
+          </div>
+        </form>
       </div>
     </div>
 

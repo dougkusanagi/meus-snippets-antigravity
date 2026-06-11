@@ -17,8 +17,8 @@
   const ACTION_KEYS = [
     { id: 'Enter', label: 'Enter', icon: '⏎' },
     { id: 'Tab', label: 'Tab', icon: '⇥' },
-    { id: 'Backspace', label: 'Bksp', icon: '⌫' },
-    { id: 'Delete', label: 'Del', icon: '⌦' },
+    { id: 'Backspace', label: 'Retroceder', icon: '⌫' },
+    { id: 'Delete', label: 'Excluir', icon: '⌦' },
     { id: 'Escape', label: 'Esc', icon: '⎋' },
   ];
 
@@ -29,10 +29,21 @@
     { id: 'Right', label: '→' },
   ];
 
+  const BUILTIN_VARIABLES = [
+    { id: 'date', label: 'Data', description: 'Data atual no formato DD/MM/AAAA' },
+    { id: 'time', label: 'Hora', description: 'Hora atual no formato HH:MM:SS' },
+    { id: 'datetime', label: 'Data e hora', description: 'Data e hora atuais no formato brasileiro' },
+    { id: 'clipboard', label: 'Área de transferência', description: 'Texto copiado atualmente' },
+    { id: 'uuid', label: 'Identificador único', description: 'Gera um código único para protocolos ou registros' },
+    { id: 'cursor', label: 'Posição do cursor', description: 'Move o cursor para este ponto após inserir o texto' },
+  ];
+
   // ---- State ----
   let editorEl = null;
   let toolbarEl = null;
   let comboIndicatorEl = null;
+  let autocompleteEl = null;
+  let autocompleteMatch = null;
   let activeModifiers = new Set();
 
   // ---- Token creation ----
@@ -59,6 +70,15 @@
     }
 
     span.textContent = label;
+    return span;
+  }
+
+  function createDelayToken(milliseconds) {
+    const span = document.createElement('span');
+    span.className = 'key-token delay-token';
+    span.contentEditable = 'false';
+    span.dataset.delay = String(milliseconds);
+    span.textContent = `Espera ${milliseconds} ms`;
     return span;
   }
 
@@ -90,6 +110,29 @@
     range.setEndAfter(node);
     sel.removeAllRanges();
     sel.addRange(range);
+    editorEl.dispatchEvent(new Event('input', { bubbles: true }));
+  }
+
+  function insertTextAtCursor(text) {
+    insertNodeAtCursor(document.createTextNode(text));
+  }
+
+  function insertCustomVariable() {
+    const value = window.prompt('Nome da variável (ex.: nome, cliente, email):', '');
+    if (value === null) return;
+
+    const name = value.trim();
+    if (!/^[\p{L}\p{N}_-]+$/u.test(name)) {
+      window.alert('Use apenas letras, números, hífen ou sublinhado.');
+      return;
+    }
+
+    insertTextAtCursor(`{{${name}}}`);
+  }
+
+  function insertVariable(variableId) {
+    insertTextAtCursor(`{{${variableId}}}`);
+    hideAutocomplete();
   }
 
   // ---- Insert key token ----
@@ -201,7 +244,147 @@
       toolbarEl.appendChild(btn);
     });
 
+    const delayButton = document.createElement('button');
+    delayButton.type = 'button';
+    delayButton.className = 'keycap';
+    delayButton.textContent = 'Espera';
+    delayButton.title = 'Inserir espera entre ações';
+    delayButton.addEventListener('mousedown', (event) => {
+      event.preventDefault();
+      const value = window.prompt('Tempo de espera em milissegundos (0-60000):', '500');
+      if (value === null) return;
+      const milliseconds = Number.parseInt(value, 10);
+      if (!Number.isInteger(milliseconds) || milliseconds < 0 || milliseconds > 60000) {
+        window.alert('Informe um valor entre 0 e 60000.');
+        return;
+      }
+      insertNodeAtCursor(createDelayToken(milliseconds));
+    });
+    toolbarEl.appendChild(delayButton);
+
+    const variableSeparator = document.createElement('div');
+    variableSeparator.className = 'toolbar-separator';
+    toolbarEl.appendChild(variableSeparator);
+
+    BUILTIN_VARIABLES.forEach(variable => {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'keycap variable-keycap';
+      button.textContent = variable.label;
+      button.title = `${variable.description}. Insere {{${variable.id}}}`;
+      button.addEventListener('mousedown', event => {
+        event.preventDefault();
+        insertVariable(variable.id);
+      });
+      toolbarEl.appendChild(button);
+    });
+
+    const customButton = document.createElement('button');
+    customButton.type = 'button';
+    customButton.className = 'keycap variable-keycap custom';
+    customButton.textContent = '+ Campo personalizado';
+    customButton.title = 'Inserir campo preenchível pelo picker';
+    customButton.addEventListener('mousedown', event => {
+      event.preventDefault();
+      insertCustomVariable();
+    });
+    toolbarEl.appendChild(customButton);
+
     container.appendChild(toolbarEl);
+  }
+
+  function buildAutocomplete(container) {
+    autocompleteEl = document.createElement('div');
+    autocompleteEl.className = 'variable-autocomplete';
+    autocompleteEl.hidden = true;
+    container.appendChild(autocompleteEl);
+  }
+
+  function getAutocompleteMatch() {
+    const selection = window.getSelection();
+    if (!selection.rangeCount || !selection.isCollapsed) return null;
+
+    const range = selection.getRangeAt(0);
+    const node = range.startContainer;
+    if (node.nodeType !== Node.TEXT_NODE || !editorEl.contains(node)) return null;
+
+    const prefix = node.textContent.slice(0, range.startOffset);
+    const match = prefix.match(/\{\{([\p{L}\p{N}_-]*)$/u);
+    if (!match) return null;
+
+    return {
+      node,
+      startOffset: range.startOffset - match[0].length,
+      endOffset: range.startOffset,
+      query: match[1].toLocaleLowerCase('pt-BR'),
+    };
+  }
+
+  function hideAutocomplete() {
+    autocompleteMatch = null;
+    if (autocompleteEl) {
+      autocompleteEl.hidden = true;
+      autocompleteEl.innerHTML = '';
+    }
+  }
+
+  function chooseAutocompleteVariable(variable) {
+    if (!autocompleteMatch) return;
+
+    const range = document.createRange();
+    range.setStart(autocompleteMatch.node, autocompleteMatch.startOffset);
+    range.setEnd(autocompleteMatch.node, autocompleteMatch.endOffset);
+    range.deleteContents();
+    const textNode = document.createTextNode(`{{${variable.id}}}`);
+    range.insertNode(textNode);
+    range.setStartAfter(textNode);
+    range.collapse(true);
+
+    const selection = window.getSelection();
+    selection.removeAllRanges();
+    selection.addRange(range);
+    editorEl.dispatchEvent(new Event('input', { bubbles: true }));
+    hideAutocomplete();
+    editorEl.focus();
+  }
+
+  function updateAutocomplete() {
+    autocompleteMatch = getAutocompleteMatch();
+    if (!autocompleteMatch) {
+      hideAutocomplete();
+      return;
+    }
+
+    const suggestions = BUILTIN_VARIABLES.filter(variable => {
+      const searchable = `${variable.id} ${variable.label} ${variable.description}`
+        .toLocaleLowerCase('pt-BR');
+      return searchable.includes(autocompleteMatch.query);
+    });
+
+    autocompleteEl.innerHTML = '';
+    suggestions.forEach(variable => {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'variable-suggestion';
+      button.innerHTML = `
+        <strong>${variable.label}</strong>
+        <code>{{${variable.id}}}</code>
+        <span>${variable.description}</span>
+      `;
+      button.addEventListener('mousedown', event => {
+        event.preventDefault();
+        chooseAutocompleteVariable(variable);
+      });
+      autocompleteEl.appendChild(button);
+    });
+
+    const customHint = document.createElement('div');
+    customHint.className = 'variable-custom-hint';
+    customHint.textContent = autocompleteMatch.query
+      ? `Continue digitando e feche com }} para criar o campo personalizado "{{${autocompleteMatch.query}}}".`
+      : 'Digite um nome para criar um campo personalizado preenchido no picker.';
+    autocompleteEl.appendChild(customHint);
+    autocompleteEl.hidden = false;
   }
 
   // ---- Build editor ----
@@ -213,6 +396,12 @@
     editorEl.setAttribute('aria-multiline', 'true');
     editorEl.setAttribute('data-placeholder', 'Tipo texto ou use os botões acima para inserir teclas...');
     editorEl.spellcheck = false;
+    editorEl.addEventListener('input', updateAutocomplete);
+    editorEl.addEventListener('keyup', updateAutocomplete);
+    editorEl.addEventListener('click', updateAutocomplete);
+    editorEl.addEventListener('blur', () => {
+      setTimeout(hideAutocomplete, 100);
+    });
 
     // Handle keydown for combo mode & token deletion
     editorEl.addEventListener('keydown', (e) => {
@@ -350,6 +539,13 @@
         }
       } else if (node.nodeType === Node.ELEMENT_NODE) {
         if (node.classList.contains('key-token')) {
+          if (node.classList.contains('delay-token')) {
+            actions.push({
+              type: 'delay',
+              milliseconds: Number.parseInt(node.dataset.delay, 10),
+            });
+            continue;
+          }
           const key = node.dataset.key;
           const modStr = node.dataset.modifiers;
           const modifiers = modStr ? modStr.split('+').filter(Boolean) : null;
@@ -401,6 +597,9 @@
         editorEl.appendChild(token);
         // Add zero-width space after for cursor positioning
         editorEl.appendChild(document.createTextNode('\u200B'));
+      } else if (action.type === 'delay') {
+        editorEl.appendChild(createDelayToken(action.milliseconds));
+        editorEl.appendChild(document.createTextNode('\u200B'));
       }
     });
   }
@@ -424,6 +623,7 @@
     container.innerHTML = '';
     buildToolbar(container);
     buildEditor(container);
+    buildAutocomplete(container);
     buildComboIndicator(container);
   }
 

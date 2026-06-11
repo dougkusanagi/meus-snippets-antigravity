@@ -1342,5 +1342,173 @@ html, body {
   font-style: italic;
 }
 
+/* ---------- Snippet metadata, filters and dialogs ---------- */
+.snippet-meta {
+  margin-top: 3px;
+  font-size: 10px;
+  color: var(--text-muted);
+}
+
+.sidebar-filters {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.compact-select {
+  min-width: 0;
+  padding: 7px 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  background: var(--bg-deep);
+  font: inherit;
+  font-size: 11px;
+}
+
+.form-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+
+.variable-help code {
+  color: var(--accent);
+  background: rgba(245, 159, 0, 0.08);
+  padding: 1px 4px;
+  border-radius: 4px;
+}
+
+.keycap.variable-keycap {
+  border-color: rgba(245, 159, 0, 0.3);
+  color: var(--accent);
+  background: linear-gradient(180deg, rgba(245, 159, 0, 0.13), rgba(245, 159, 0, 0.07));
+}
+
+.keycap.variable-keycap:hover {
+  border-color: var(--border-accent);
+  color: var(--accent-hover);
+  background: rgba(245, 159, 0, 0.18);
+}
+
+.keycap.variable-keycap.custom {
+  color: var(--text-primary);
+  border-style: dashed;
+}
+
+.variable-autocomplete {
+  overflow: hidden;
+  margin-top: 6px;
+  border: 1px solid var(--border-accent);
+  border-radius: var(--radius-md);
+  background: var(--bg-overlay);
+  box-shadow: 0 14px 30px rgba(0, 0, 0, 0.4);
+}
+
+.variable-autocomplete[hidden] {
+  display: none;
+}
+
+.variable-suggestion {
+  display: grid;
+  grid-template-columns: minmax(120px, 0.8fr) minmax(110px, 0.7fr) minmax(180px, 1.5fr);
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 9px 12px;
+  border: 0;
+  border-bottom: 1px solid var(--border-subtle);
+  color: var(--text-primary);
+  text-align: left;
+  background: transparent;
+  cursor: pointer;
+}
+
+.variable-suggestion:hover,
+.variable-suggestion:focus {
+  outline: none;
+  background: rgba(245, 159, 0, 0.1);
+}
+
+.variable-suggestion strong {
+  color: var(--accent);
+  font-size: 12px;
+}
+
+.variable-suggestion code {
+  color: var(--text-primary);
+  font-family: 'Cascadia Code', Consolas, monospace;
+  font-size: 11px;
+}
+
+.variable-suggestion span {
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+.variable-custom-hint {
+  padding: 8px 12px;
+  color: var(--text-muted);
+  font-size: 11px;
+  background: rgba(0, 0, 0, 0.12);
+}
+
+.delay-token {
+  color: #8bd5ca;
+  border-color: rgba(139, 213, 202, 0.35);
+  background: rgba(139, 213, 202, 0.1);
+}
+
+#btn-favorite.active {
+  color: var(--accent);
+  border-color: var(--border-accent);
+  background: rgba(245, 159, 0, 0.1);
+}
+
+.settings-section {
+  margin-top: 32px;
+  padding-top: 24px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.settings-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.app-dialog {
+  width: min(620px, 90vw);
+  color: var(--text-primary);
+  background: var(--bg-raised);
+  border: 1px solid var(--border-medium);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.65);
+  padding: 0;
+}
+
+.app-dialog::backdrop {
+  background: rgba(4, 5, 8, 0.78);
+  backdrop-filter: blur(8px);
+}
+
+.dialog-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 18px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.app-dialog pre {
+  max-height: 60vh;
+  overflow: auto;
+  padding: 18px;
+  white-space: pre-wrap;
+  color: var(--text-secondary);
+  font-family: 'Cascadia Code', Consolas, monospace;
+}
+
 
 

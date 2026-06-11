@@ -1,25 +1,31 @@
 use crate::macro_engine;
-use crate::snippet_store::{MacroAction, SnippetStore};
+use crate::snippet_store::{MacroAction, Snippet, SnippetInput, SnippetStore};
+use std::collections::{BTreeSet, HashMap};
 use tauri::{AppHandle, Manager, State};
 
 #[tauri::command]
-pub fn get_snippets(store: State<'_, SnippetStore>) -> Vec<serde_json::Value> {
-    let snippets = store.get_all();
-    snippets
-        .into_iter()
-        .map(|s| serde_json::to_value(s).unwrap())
-        .collect()
+pub fn get_snippets(store: State<'_, SnippetStore>) -> Result<Vec<Snippet>, String> {
+    store.get_all()
 }
 
 #[tauri::command]
 pub fn add_snippet(
     trigger: String,
     name: String,
+    category: String,
+    tags: Vec<String>,
+    favorite: bool,
     actions: Vec<MacroAction>,
     store: State<'_, SnippetStore>,
-) -> serde_json::Value {
-    let snippet = store.add(trigger, name, actions);
-    serde_json::to_value(snippet).unwrap()
+) -> Result<Snippet, String> {
+    store.add(SnippetInput {
+        trigger,
+        name,
+        category,
+        tags,
+        favorite,
+        actions,
+    })
 }
 
 #[tauri::command]
@@ -27,17 +33,27 @@ pub fn update_snippet(
     id: String,
     trigger: String,
     name: String,
+    category: String,
+    tags: Vec<String>,
+    favorite: bool,
     actions: Vec<MacroAction>,
     store: State<'_, SnippetStore>,
-) -> Result<serde_json::Value, String> {
-    match store.update(&id, trigger, name, actions) {
-        Some(snippet) => Ok(serde_json::to_value(snippet).unwrap()),
-        None => Err(format!("Snippet not found: {}", id)),
-    }
+) -> Result<Snippet, String> {
+    store.update(
+        &id,
+        SnippetInput {
+            trigger,
+            name,
+            category,
+            tags,
+            favorite,
+            actions,
+        },
+    )
 }
 
 #[tauri::command]
-pub fn delete_snippet(id: String, store: State<'_, SnippetStore>) -> bool {
+pub fn delete_snippet(id: String, store: State<'_, SnippetStore>) -> Result<bool, String> {
     store.delete(&id)
 }
 
@@ -45,27 +61,87 @@ pub fn delete_snippet(id: String, store: State<'_, SnippetStore>) -> bool {
 pub fn execute_macro(
     id: String,
     delete_trigger: bool,
+    variables: HashMap<String, String>,
     app: AppHandle,
     store: State<'_, SnippetStore>,
 ) -> Result<(), String> {
     let snippet = store
-        .get_by_id(&id)
+        .get_by_id(&id)?
         .ok_or_else(|| format!("Snippet not found: {}", id))?;
 
     if delete_trigger {
-        // Delete the trigger text first (trigger length + the hotkey doesn't type anything,
-        // but the trigger was typed by the user)
-        let trigger_len = snippet.trigger.len();
+        let trigger_len = snippet.trigger.chars().count();
         macro_engine::delete_trigger(trigger_len)?;
-
-        // Small delay to let the deletions register
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
 
-    // Execute the macro actions
-    macro_engine::execute(&snippet.actions, &app)?;
-
+    macro_engine::execute(&snippet.actions, &app, &variables)?;
+    store.record_usage(&id)?;
     Ok(())
+}
+
+#[tauri::command]
+pub fn duplicate_snippet(id: String, store: State<'_, SnippetStore>) -> Result<Snippet, String> {
+    store.duplicate(&id)
+}
+
+#[tauri::command]
+pub fn set_snippet_favorite(
+    id: String,
+    favorite: bool,
+    store: State<'_, SnippetStore>,
+) -> Result<Snippet, String> {
+    store.set_favorite(&id, favorite)
+}
+
+#[tauri::command]
+pub fn export_snippets(store: State<'_, SnippetStore>) -> Result<String, String> {
+    store.export_json()
+}
+
+#[tauri::command]
+pub fn import_snippets(
+    content: String,
+    replace: bool,
+    store: State<'_, SnippetStore>,
+) -> Result<usize, String> {
+    store.import_json(&content, replace)
+}
+
+#[tauri::command]
+pub fn get_snippet_variables(
+    id: String,
+    store: State<'_, SnippetStore>,
+) -> Result<Vec<String>, String> {
+    let snippet = store
+        .get_by_id(&id)?
+        .ok_or_else(|| format!("Snippet not found: {id}"))?;
+    let builtins = ["date", "time", "datetime", "clipboard", "uuid", "cursor"];
+    let mut variables = BTreeSet::new();
+
+    for action in snippet.actions {
+        if let MacroAction::Text { value } = action {
+            let mut remaining = value.as_str();
+            while let Some(start) = remaining.find("{{") {
+                let after_start = &remaining[start + 2..];
+                let Some(end) = after_start.find("}}") else {
+                    break;
+                };
+                let name = after_start[..end].trim();
+                if !name.is_empty()
+                    && !builtins.contains(&name)
+                    && name.chars().all(|character| {
+                        character.is_alphanumeric() || character == '_' || character == '-'
+                    })
+                {
+                    variables.insert(name.to_string());
+                }
+                remaining = &after_start[end + 2..];
+            }
+        }
+    }
+
+    Ok(variables.into_iter().collect())
 }
 
 #[tauri::command]
@@ -96,18 +172,27 @@ pub struct PlatformInfo {
 
 #[cfg(target_os = "linux")]
 fn is_uinput_accessible() -> bool {
-    std::fs::OpenOptions::new().write(true).open("/dev/uinput").is_ok()
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open("/dev/uinput")
+        .is_ok()
 }
 
 #[cfg(target_os = "linux")]
 pub fn is_gnome_shortcut_registered() -> bool {
-    let desktop = std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_default().to_lowercase();
+    let desktop = std::env::var("XDG_CURRENT_DESKTOP")
+        .unwrap_or_default()
+        .to_lowercase();
     if !desktop.contains("gnome") && !desktop.contains("ubuntu") {
         return false;
     }
 
     let output = match std::process::Command::new("gsettings")
-        .args(&["get", "org.gnome.settings-daemon.plugins.media-keys", "custom-keybindings"])
+        .args(&[
+            "get",
+            "org.gnome.settings-daemon.plugins.media-keys",
+            "custom-keybindings",
+        ])
         .output()
     {
         Ok(out) => out,
@@ -115,25 +200,32 @@ pub fn is_gnome_shortcut_registered() -> bool {
     };
 
     let out_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    let path = "'/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/guepardosys-snip/'";
+    let path =
+        "'/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/guepardosys-snip/'";
     if !out_str.contains(path) {
         return false;
     }
 
-    let path_without_quotes = "/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/guepardosys-snip/";
+    let path_without_quotes =
+        "/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/guepardosys-snip/";
     let binding_output = match std::process::Command::new("gsettings")
         .args(&[
             "get",
-            &format!("org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:{}", path_without_quotes),
-            "binding"
+            &format!(
+                "org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:{}",
+                path_without_quotes
+            ),
+            "binding",
         ])
         .output()
     {
         Ok(out) => out,
         Err(_) => return false,
     };
-    let binding_str = String::from_utf8_lossy(&binding_output.stdout).trim().to_string();
-    
+    let binding_str = String::from_utf8_lossy(&binding_output.stdout)
+        .trim()
+        .to_string();
+
     if binding_str.is_empty() || binding_str == "''" || binding_str == "@as []" {
         return false;
     }
@@ -142,9 +234,10 @@ pub fn is_gnome_shortcut_registered() -> bool {
 }
 
 #[tauri::command]
+#[allow(unused_mut)]
 pub fn get_platform_info() -> Result<PlatformInfo, String> {
     let os = std::env::consts::OS.to_string();
-    
+
     #[cfg(target_os = "linux")]
     let session_type = std::env::var("XDG_SESSION_TYPE").unwrap_or_default();
     #[cfg(not(target_os = "linux"))]
@@ -157,7 +250,7 @@ pub fn get_platform_info() -> Result<PlatformInfo, String> {
 
     let mut needs_permission = false;
     let mut permission_type = String::new();
-    
+
     #[cfg(target_os = "linux")]
     let uinput_active = is_uinput_accessible();
     #[cfg(not(target_os = "linux"))]
@@ -195,7 +288,7 @@ pub fn get_platform_info() -> Result<PlatformInfo, String> {
 fn to_gnome_binding(shortcut_str: &str) -> String {
     let parts: Vec<&str> = shortcut_str.split('+').collect();
     let mut gnome_parts = Vec::new();
-    
+
     for (i, part) in parts.iter().enumerate() {
         let part_lower = part.trim().to_lowercase();
         if i == parts.len() - 1 {
@@ -249,8 +342,8 @@ fn to_gnome_binding(shortcut_str: &str) -> String {
 
 #[cfg(target_os = "linux")]
 pub fn register_gnome_shortcut(app: &AppHandle) -> Result<(), String> {
-    let current_exe = std::env::current_exe()
-        .map_err(|e| format!("Failed to get current exe path: {}", e))?;
+    let current_exe =
+        std::env::current_exe().map_err(|e| format!("Failed to get current exe path: {}", e))?;
     let exe_str = current_exe.to_string_lossy().to_string();
     let command_to_run = format!("{} --toggle", exe_str);
 
@@ -268,7 +361,7 @@ pub fn register_gnome_shortcut(app: &AppHandle) -> Result<(), String> {
         ])
         .status()
         .map_err(|e| format!("Failed to run gsettings set name: {}", e))?;
-        
+
     if !status.success() {
         return Err("gsettings set name returned non-zero status".to_string());
     }
@@ -305,13 +398,17 @@ pub fn register_gnome_shortcut(app: &AppHandle) -> Result<(), String> {
 
     // 4. Append to custom-keybindings list
     let output = std::process::Command::new("gsettings")
-        .args(&["get", "org.gnome.settings-daemon.plugins.media-keys", "custom-keybindings"])
+        .args(&[
+            "get",
+            "org.gnome.settings-daemon.plugins.media-keys",
+            "custom-keybindings",
+        ])
         .output()
         .map_err(|e| format!("Failed to get custom-keybindings: {}", e))?;
 
     let out_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
     let mut paths = Vec::new();
-    
+
     if out_str != "@as []" && !out_str.is_empty() {
         let cleaned = out_str.replace('[', "").replace(']', "");
         for part in cleaned.split(',') {
@@ -322,13 +419,15 @@ pub fn register_gnome_shortcut(app: &AppHandle) -> Result<(), String> {
         }
     }
 
-    let new_path = "'/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/guepardosys-snip/'".to_string();
+    let new_path =
+        "'/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/guepardosys-snip/'"
+            .to_string();
     if !paths.contains(&new_path) {
         paths.push(new_path);
     }
 
     let formatted_list = format!("[{}]", paths.join(", "));
-    
+
     let status = std::process::Command::new("gsettings")
         .args(&[
             "set",
@@ -347,12 +446,14 @@ pub fn register_gnome_shortcut(app: &AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn open_system_settings(app: AppHandle) -> Result<String, String> {
+pub fn open_system_settings(_app: AppHandle) -> Result<String, String> {
     #[cfg(target_os = "linux")]
     {
-        let desktop = std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_default().to_lowercase();
+        let desktop = std::env::var("XDG_CURRENT_DESKTOP")
+            .unwrap_or_default()
+            .to_lowercase();
         if desktop.contains("gnome") || desktop.contains("ubuntu") {
-            match register_gnome_shortcut(&app) {
+            match register_gnome_shortcut(&_app) {
                 Ok(_) => return Ok("registered".to_string()),
                 Err(e) => {
                     eprintln!("Failed to register GNOME shortcut: {}", e);
@@ -363,13 +464,9 @@ pub fn open_system_settings(app: AppHandle) -> Result<String, String> {
         let _ = std::process::Command::new("gnome-control-center")
             .arg("keyboard")
             .spawn()
-            .or_else(|_| {
-                std::process::Command::new("gnome-control-center").spawn()
-            })
-            .or_else(|_| {
-                std::process::Command::new("systemsettings").spawn()
-            });
-            
+            .or_else(|_| std::process::Command::new("gnome-control-center").spawn())
+            .or_else(|_| std::process::Command::new("systemsettings").spawn());
+
         Ok("opened".to_string())
     }
 
@@ -396,7 +493,7 @@ pub fn open_system_settings(app: AppHandle) -> Result<String, String> {
 }
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
-use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, Modifiers, Code};
+use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut};
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub fn get_shortcut_from_file(app: &AppHandle) -> (String, String, bool) {
@@ -405,29 +502,32 @@ pub fn get_shortcut_from_file(app: &AppHandle) -> (String, String, bool) {
     } else {
         "Ctrl+;".to_string()
     };
-    
+
     let path = match app.path().app_data_dir() {
         Ok(dir) => dir.join("settings.json"),
         Err(_) => return (default_shortcut.clone(), default_shortcut, false),
     };
-    
+
     if path.exists() {
         if let Ok(content) = std::fs::read_to_string(&path) {
             if let Ok(val) = serde_json::from_str::<serde_json::Value>(&content) {
-                let shortcut = val.get("shortcut")
+                let shortcut = val
+                    .get("shortcut")
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_string())
                     .unwrap_or_else(|| default_shortcut.clone());
-                
-                let display = val.get("display")
+
+                let display = val
+                    .get("display")
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_string())
                     .unwrap_or_else(|| shortcut.clone());
-                
-                let onboarding_completed = val.get("onboarding_completed")
+
+                let onboarding_completed = val
+                    .get("onboarding_completed")
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false);
-                
+
                 return (shortcut, display, onboarding_completed);
             }
         }
@@ -436,7 +536,12 @@ pub fn get_shortcut_from_file(app: &AppHandle) -> (String, String, bool) {
 }
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
-fn save_shortcut_to_file(app: &AppHandle, shortcut: &str, display: &str, onboarding_completed: bool) -> Result<(), String> {
+fn save_shortcut_to_file(
+    app: &AppHandle,
+    shortcut: &str,
+    display: &str,
+    onboarding_completed: bool,
+) -> Result<(), String> {
     let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let path = dir.join("settings.json");
@@ -456,10 +561,10 @@ pub fn parse_shortcut(s: &str) -> Result<Shortcut, String> {
     if parts.is_empty() {
         return Err("Shortcut string is empty".to_string());
     }
-    
+
     let mut modifiers = Modifiers::empty();
     let mut code_str = "";
-    
+
     for (i, part) in parts.iter().enumerate() {
         let part_trimmed = part.trim();
         let part_lower = part_trimmed.to_lowercase();
@@ -484,13 +589,13 @@ pub fn parse_shortcut(s: &str) -> Result<Shortcut, String> {
             }
         }
     }
-    
+
     if code_str.is_empty() {
         return Err("Missing key code in shortcut".to_string());
     }
-    
+
     let code = match_key_code(code_str)?;
-    
+
     Ok(Shortcut::new(Some(modifiers), code))
 }
 
@@ -524,7 +629,7 @@ fn match_key_code(s: &str) -> Result<Code, String> {
         "X" => Ok(Code::KeyX),
         "Y" => Ok(Code::KeyY),
         "Z" => Ok(Code::KeyZ),
-        
+
         "0" => Ok(Code::Digit0),
         "1" => Ok(Code::Digit1),
         "2" => Ok(Code::Digit2),
@@ -535,7 +640,7 @@ fn match_key_code(s: &str) -> Result<Code, String> {
         "7" => Ok(Code::Digit7),
         "8" => Ok(Code::Digit8),
         "9" => Ok(Code::Digit9),
-        
+
         "SPACE" => Ok(Code::Space),
         "ENTER" | "RETURN" => Ok(Code::Enter),
         "ESCAPE" | "ESC" => Ok(Code::Escape),
@@ -547,12 +652,12 @@ fn match_key_code(s: &str) -> Result<Code, String> {
         "END" => Ok(Code::End),
         "PAGEUP" | "PGUP" => Ok(Code::PageUp),
         "PAGEDOWN" | "PGDN" => Ok(Code::PageDown),
-        
+
         "UP" | "ARROWUP" => Ok(Code::ArrowUp),
         "DOWN" | "ARROWDOWN" => Ok(Code::ArrowDown),
         "LEFT" | "ARROWLEFT" => Ok(Code::ArrowLeft),
         "RIGHT" | "ARROWRIGHT" => Ok(Code::ArrowRight),
-        
+
         "F1" => Ok(Code::F1),
         "F2" => Ok(Code::F2),
         "F3" => Ok(Code::F3),
@@ -565,7 +670,7 @@ fn match_key_code(s: &str) -> Result<Code, String> {
         "F10" => Ok(Code::F10),
         "F11" => Ok(Code::F11),
         "F12" => Ok(Code::F12),
-        
+
         ";" | "SEMICOLON" => Ok(Code::Semicolon),
         "," | "COMMA" => Ok(Code::Comma),
         "." | "PERIOD" => Ok(Code::Period),
@@ -579,7 +684,7 @@ fn match_key_code(s: &str) -> Result<Code, String> {
         "\\" | "BACKSLASH" => Ok(Code::Backslash),
         "INTLRO" => Ok(Code::IntlRo),
         "INTLBACKSLASH" => Ok(Code::IntlBackslash),
-        
+
         _ => Err(format!("Unsupported key code: {}", s)),
     }
 }
@@ -610,29 +715,45 @@ pub fn set_shortcut(app: AppHandle, shortcut: String, display: String) -> Result
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     {
         let new_shortcut = parse_shortcut(&shortcut)?;
-        
+
         let (old_shortcut_str, _, onboarding_completed) = get_shortcut_from_file(&app);
-        if let Ok(old_shortcut) = parse_shortcut(&old_shortcut_str) {
-            let _ = app.global_shortcut().unregister(old_shortcut);
+        let old_shortcut = parse_shortcut(&old_shortcut_str).ok();
+        if let Some(previous) = old_shortcut.clone() {
+            let _ = app.global_shortcut().unregister(previous);
         }
-        
-        save_shortcut_to_file(&app, &shortcut, &display, onboarding_completed)?;
-        
-        app.global_shortcut()
-            .register(new_shortcut)
-            .map_err(|e| format!("Failed to register shortcut with OS: {}", e))?;
-            
+
+        if let Err(error) = app.global_shortcut().register(new_shortcut.clone()) {
+            if let Some(previous) = old_shortcut {
+                let _ = app.global_shortcut().register(previous);
+            }
+            return Err(format!("Failed to register shortcut with OS: {error}"));
+        }
+
+        if let Err(error) = save_shortcut_to_file(&app, &shortcut, &display, onboarding_completed) {
+            let _ = app.global_shortcut().unregister(new_shortcut);
+            if let Some(previous) = parse_shortcut(&old_shortcut_str).ok() {
+                let _ = app.global_shortcut().register(previous);
+            }
+            return Err(error);
+        }
+
         #[cfg(target_os = "linux")]
         {
-            let desktop = std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_default().to_lowercase();
-            let session_type = std::env::var("XDG_SESSION_TYPE").unwrap_or_default().to_lowercase();
-            if (desktop.contains("gnome") || desktop.contains("ubuntu")) && (session_type == "wayland" || is_gnome_shortcut_registered()) {
+            let desktop = std::env::var("XDG_CURRENT_DESKTOP")
+                .unwrap_or_default()
+                .to_lowercase();
+            let session_type = std::env::var("XDG_SESSION_TYPE")
+                .unwrap_or_default()
+                .to_lowercase();
+            if (desktop.contains("gnome") || desktop.contains("ubuntu"))
+                && (session_type == "wayland" || is_gnome_shortcut_registered())
+            {
                 if let Err(e) = register_gnome_shortcut(&app) {
                     eprintln!("Failed to update GNOME custom shortcut: {}", e);
                 }
             }
         }
-            
+
         Ok(())
     }
     #[cfg(any(target_os = "android", target_os = "ios"))]
@@ -700,10 +821,10 @@ pub fn set_onboarding_completed(app: AppHandle, completed: bool) -> Result<(), S
 pub fn trigger_permission_check() -> Result<(), String> {
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     {
-        use enigo::{Enigo, Key, Keyboard, Settings, Direction};
+        use enigo::{Direction, Enigo, Key, Keyboard, Settings};
         let mut enigo = Enigo::new(&Settings::default())
             .map_err(|e| format!("Failed to initialize enigo: {}", e))?;
-        
+
         let _ = enigo.key(Key::Shift, Direction::Press);
         let _ = enigo.key(Key::Shift, Direction::Release);
     }
@@ -718,6 +839,7 @@ pub struct KeyboardConflicts {
 }
 
 #[tauri::command]
+#[allow(unused_mut)]
 pub fn check_keyboard_conflicts() -> Result<KeyboardConflicts, String> {
     let mut has_alt_space_conflict = false;
     let mut has_ctrl_semicolon_conflict = false;
@@ -726,7 +848,11 @@ pub fn check_keyboard_conflicts() -> Result<KeyboardConflicts, String> {
     {
         // 1. Check Alt+Space window menu shortcut in GNOME
         if let Ok(output) = std::process::Command::new("gsettings")
-            .args(&["get", "org.gnome.desktop.wm.keybindings", "activate-window-menu"])
+            .args(&[
+                "get",
+                "org.gnome.desktop.wm.keybindings",
+                "activate-window-menu",
+            ])
             .output()
         {
             let out_str = String::from_utf8_lossy(&output.stdout).to_lowercase();
@@ -741,7 +867,9 @@ pub fn check_keyboard_conflicts() -> Result<KeyboardConflicts, String> {
             .output()
         {
             let out_str = String::from_utf8_lossy(&output.stdout).to_lowercase();
-            if out_str.contains("control") && (out_str.contains("semicolon") || out_str.contains(";")) {
+            if out_str.contains("control")
+                && (out_str.contains("semicolon") || out_str.contains(";"))
+            {
                 has_ctrl_semicolon_conflict = true;
             }
         }
@@ -754,18 +882,23 @@ pub fn check_keyboard_conflicts() -> Result<KeyboardConflicts, String> {
 }
 
 #[tauri::command]
-pub fn resolve_keyboard_conflict(conflict_type: String) -> Result<(), String> {
+pub fn resolve_keyboard_conflict(_conflict_type: String) -> Result<(), String> {
     #[cfg(target_os = "linux")]
     {
-        if conflict_type == "alt-space" {
+        if _conflict_type == "alt-space" {
             let status = std::process::Command::new("gsettings")
-                .args(&["set", "org.gnome.desktop.wm.keybindings", "activate-window-menu", "[]"])
+                .args(&[
+                    "set",
+                    "org.gnome.desktop.wm.keybindings",
+                    "activate-window-menu",
+                    "[]",
+                ])
                 .status()
                 .map_err(|e| format!("Failed to resolve alt-space conflict: {}", e))?;
             if !status.success() {
                 return Err("Failed to clear activate-window-menu setting".to_string());
             }
-        } else if conflict_type == "ctrl-semicolon" {
+        } else if _conflict_type == "ctrl-semicolon" {
             let status = std::process::Command::new("gsettings")
                 .args(&["set", "org.freedesktop.ibus.panel.emoji", "hotkey", "[]"])
                 .status()
@@ -777,6 +910,3 @@ pub fn resolve_keyboard_conflict(conflict_type: String) -> Result<(), String> {
     }
     Ok(())
 }
-
-
-

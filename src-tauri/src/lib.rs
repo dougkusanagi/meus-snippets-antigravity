@@ -9,9 +9,9 @@ use tauri::{Emitter, Manager};
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 fn picker_last_shown() -> &'static Mutex<Option<Instant>> {
     static CELL: OnceLock<Mutex<Option<Instant>>> = OnceLock::new();
@@ -28,7 +28,6 @@ pub fn set_shortcut_recording_active(active: bool) {
     SHORTCUT_RECORDING_ACTIVE.store(active, Ordering::Relaxed);
 }
 
-
 fn toggle_picker(app: &tauri::AppHandle) {
     if is_shortcut_recording_active() {
         return;
@@ -37,10 +36,12 @@ fn toggle_picker(app: &tauri::AppHandle) {
         if picker.is_visible().unwrap_or(false) {
             let _ = picker.hide();
         } else {
+            #[cfg(target_os = "linux")]
             let mut timestamp: Option<u32> = None;
             #[cfg(target_os = "linux")]
             {
-                if let Ok(startup_id) = std::fs::read_to_string("/tmp/guepardosys-snip-startup-id") {
+                if let Ok(startup_id) = std::fs::read_to_string("/tmp/guepardosys-snip-startup-id")
+                {
                     if let Some(pos) = startup_id.rfind("_TIME") {
                         let ts_str = startup_id[pos + 5..].trim();
                         if let Ok(ts) = ts_str.parse::<u32>() {
@@ -90,16 +91,19 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_clipboard_manager::init())
-        .plugin(tauri_plugin_global_shortcut::Builder::new()
-            .with_handler(|app, _shortcut, event| {
-                if event.state == ShortcutState::Pressed {
-                    toggle_picker(app);
-                }
-            })
-            .build()
+        .plugin(
+            tauri_plugin_global_shortcut::Builder::new()
+                .with_handler(|app, _shortcut, event| {
+                    if event.state == ShortcutState::Pressed {
+                        toggle_picker(app);
+                    }
+                })
+                .build(),
         )
         .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
-            let has_picker_arg = argv.iter().any(|arg| arg == "--picker" || arg == "--toggle" || arg == "-p");
+            let has_picker_arg = argv
+                .iter()
+                .any(|arg| arg == "--picker" || arg == "--toggle" || arg == "-p");
             if has_picker_arg {
                 toggle_picker(app);
             } else {
@@ -116,6 +120,11 @@ pub fn run() {
             commands::update_snippet,
             commands::delete_snippet,
             commands::execute_macro,
+            commands::duplicate_snippet,
+            commands::set_snippet_favorite,
+            commands::export_snippets,
+            commands::import_snippets,
+            commands::get_snippet_variables,
             commands::hide_picker,
             commands::show_manager,
             commands::get_platform_info,
@@ -171,11 +180,12 @@ pub fn run() {
                 .app_data_dir()
                 .expect("Failed to get app data directory");
             let store = app.state::<SnippetStore>();
-            store.init(app_data_dir);
+            store
+                .init(app_data_dir)
+                .map_err(|error| Box::<dyn std::error::Error>::from(error))?;
 
             // Setup system tray
-            tray::setup_tray(app.handle())
-                .expect("Failed to setup system tray");
+            tray::setup_tray(app.handle()).expect("Failed to setup system tray");
 
             // Load custom global shortcut on startup and register it
             #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -185,13 +195,23 @@ pub fn run() {
                 match commands::parse_shortcut(&shortcut_str) {
                     Ok(shortcut) => {
                         if let Err(e) = app.global_shortcut().register(shortcut) {
-                            eprintln!("Failed to register startup global shortcut '{}': {}", shortcut_str, e);
+                            eprintln!(
+                                "Failed to register startup global shortcut '{}': {}",
+                                shortcut_str, e
+                            );
                         }
                     }
                     Err(e) => {
-                        eprintln!("Failed to parse startup global shortcut '{}': {}", shortcut_str, e);
+                        eprintln!(
+                            "Failed to parse startup global shortcut '{}': {}",
+                            shortcut_str, e
+                        );
                         // Register default fallback
-                        let default_str = if cfg!(target_os = "macos") { "Command+;" } else { "Ctrl+;" };
+                        let default_str = if cfg!(target_os = "macos") {
+                            "Command+;"
+                        } else {
+                            "Ctrl+;"
+                        };
                         if let Ok(default_shortcut) = commands::parse_shortcut(default_str) {
                             let _ = app.global_shortcut().register(default_shortcut);
                         }
@@ -201,9 +221,15 @@ pub fn run() {
                 // On Linux GNOME, also synchronize the system-wide shortcut on startup
                 #[cfg(target_os = "linux")]
                 {
-                    let desktop = std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_default().to_lowercase();
-                    let session_type = std::env::var("XDG_SESSION_TYPE").unwrap_or_default().to_lowercase();
-                    if (desktop.contains("gnome") || desktop.contains("ubuntu")) && (session_type == "wayland" || commands::is_gnome_shortcut_registered()) {
+                    let desktop = std::env::var("XDG_CURRENT_DESKTOP")
+                        .unwrap_or_default()
+                        .to_lowercase();
+                    let session_type = std::env::var("XDG_SESSION_TYPE")
+                        .unwrap_or_default()
+                        .to_lowercase();
+                    if (desktop.contains("gnome") || desktop.contains("ubuntu"))
+                        && (session_type == "wayland" || commands::is_gnome_shortcut_registered())
+                    {
                         if let Err(e) = commands::register_gnome_shortcut(app_handle) {
                             eprintln!("Failed to register startup GNOME custom shortcut: {}", e);
                         }

@@ -326,3 +326,80 @@ html, body {
   color: #ffffff;
 }
 
+/* ---------- Prompt variables ---------- */
+.variable-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 10;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(7, 9, 14, 0.9);
+  backdrop-filter: blur(12px);
+}
+
+.variable-overlay[hidden] {
+  display: none;
+}
+
+.variable-card {
+  width: min(420px, 100%);
+  padding: 20px;
+  border: 1px solid var(--border-medium);
+  border-radius: var(--radius-lg);
+  background: var(--bg-base);
+  box-shadow: var(--shadow-popup);
+}
+
+.variable-card h2 {
+  margin-bottom: 14px;
+  font-size: 17px;
+}
+
+#variable-fields {
+  display: grid;
+  gap: 10px;
+}
+
+#variable-fields label {
+  display: grid;
+  gap: 5px;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+#variable-fields input {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--border-medium);
+  border-radius: var(--radius-md);
+  outline: none;
+  color: var(--text-primary);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+#variable-fields input:focus {
+  border-color: var(--border-accent);
+}
+
+.variable-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.variable-actions button {
+  padding: 8px 14px;
+  border: 1px solid var(--border-medium);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  color: var(--text-primary);
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.variable-actions button[type='submit'] {
+  border-color: var(--accent);
+  background: var(--accent);
+}
+
