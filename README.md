@@ -39,6 +39,8 @@ bun run dev
 Comandos disponiveis:
 
 ```powershell
+bun run tauri dev
+bun run tauri build
 bun run dev
 bun run build
 bun run check

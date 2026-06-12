@@ -5,8 +5,10 @@
   "type": "module",
   "scripts": {
     "tauri": "tauri",
-    "dev": "tauri dev",
-    "build": "tauri build",
+    "tauri:dev": "bun run tauri dev",
+    "tauri:build": "bun run tauri build",
+    "dev": "bun run tauri:dev",
+    "build": "bun run tauri:build",
     "check": "bun run check:js && bun run check:rust",
     "check:js": "bun build ./src/scripts/manager.js ./src/scripts/picker.js ./src/scripts/macro-editor.js --outdir=./.tmp-js-check --target=browser",
     "check:rust": "cargo check --manifest-path src-tauri/Cargo.toml",
