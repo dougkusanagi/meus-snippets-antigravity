@@ -115,6 +115,7 @@ pub fn run() {
         }))
         .manage(store)
         .invoke_handler(tauri::generate_handler![
+            commands::get_app_version,
             commands::get_snippets,
             commands::add_snippet,
             commands::update_snippet,
@@ -129,6 +130,7 @@ pub fn run() {
             commands::show_manager,
             commands::get_platform_info,
             commands::open_system_settings,
+            commands::open_external_url,
             commands::get_shortcut,
             commands::set_shortcut,
             commands::disable_global_shortcut,

@@ -40,8 +40,17 @@
   const settingsPanel = () => document.getElementById('settings-panel');
   const shortcutInput = () => document.getElementById('input-shortcut');
   const btnResetShortcut = () => document.getElementById('btn-reset-shortcut');
+  const updateStatusTitle = () => document.getElementById('update-status-title');
+  const updateStatusDescription = () => document.getElementById('update-status-description');
+  const btnCheckUpdates = () => document.getElementById('btn-check-updates');
+  const btnDownloadUpdate = () => document.getElementById('btn-download-update');
 
   let isMac = navigator.userAgent.indexOf('Mac') !== -1;
+  let latestReleaseUrl = '';
+
+  const GITHUB_REPO = 'dougkusanagi/meus-snippets-antigravity';
+  const GITHUB_LATEST_RELEASE_API = `https://api.github.com/repos/${GITHUB_REPO}/releases/latest`;
+  const GITHUB_RELEASES_PAGE = `https://github.com/${GITHUB_REPO}/releases`;
 
   // ---- Tauri API ----
   function invoke(cmd, args) {
@@ -60,6 +69,108 @@
       toast.classList.add('fade-out');
       toast.addEventListener('animationend', () => toast.remove());
     }, 2500);
+  }
+
+  function setUpdateStatus(title, description, options = {}) {
+    const { canDownload = false, checking = false } = options;
+
+    updateStatusTitle().textContent = title;
+    updateStatusDescription().textContent = description;
+    btnCheckUpdates().disabled = checking;
+    btnCheckUpdates().innerHTML = checking
+      ? '<i data-lucide="loader-circle"></i> Verificando...'
+      : '<i data-lucide="refresh-cw"></i> Verificar agora';
+    btnDownloadUpdate().style.display = canDownload ? 'inline-flex' : 'none';
+
+    if (window.lucide) {
+      window.lucide.createIcons();
+    }
+  }
+
+  function normalizeVersion(version) {
+    return String(version || '')
+      .trim()
+      .replace(/^v/i, '')
+      .split('-')[0];
+  }
+
+  function compareVersions(left, right) {
+    const leftParts = normalizeVersion(left).split('.').map(part => parseInt(part, 10) || 0);
+    const rightParts = normalizeVersion(right).split('.').map(part => parseInt(part, 10) || 0);
+    const maxLength = Math.max(leftParts.length, rightParts.length);
+
+    for (let index = 0; index < maxLength; index += 1) {
+      const leftValue = leftParts[index] || 0;
+      const rightValue = rightParts[index] || 0;
+      if (leftValue > rightValue) return 1;
+      if (leftValue < rightValue) return -1;
+    }
+
+    return 0;
+  }
+
+  function formatReleaseDate(dateString) {
+    if (!dateString) return '';
+    const date = new Date(dateString);
+    if (Number.isNaN(date.getTime())) return '';
+    return date.toLocaleDateString('pt-BR');
+  }
+
+  async function checkForUpdates({ silent = false } = {}) {
+    setUpdateStatus(
+      'Verificando atualizações...',
+      'Comparando a versão instalada com a release mais recente no GitHub.',
+      { checking: true }
+    );
+
+    try {
+      const currentVersion = await invoke('get_app_version');
+      const response = await fetch(GITHUB_LATEST_RELEASE_API, {
+        headers: { Accept: 'application/vnd.github+json' },
+        cache: 'no-store',
+      });
+
+      if (!response.ok) {
+        throw new Error(`GitHub respondeu com status ${response.status}`);
+      }
+
+      const release = await response.json();
+      const latestVersion = release.tag_name || release.name || '';
+      latestReleaseUrl = release.html_url || GITHUB_RELEASES_PAGE;
+
+      if (compareVersions(latestVersion, currentVersion) > 0) {
+        const publishedAt = formatReleaseDate(release.published_at);
+        const description = publishedAt
+          ? `Versão atual ${normalizeVersion(currentVersion)}. Nova versão ${normalizeVersion(latestVersion)} publicada em ${publishedAt}.`
+          : `Versão atual ${normalizeVersion(currentVersion)}. Nova versão ${normalizeVersion(latestVersion)} disponível.`;
+        setUpdateStatus('Nova atualização disponível', description, { canDownload: true });
+        return;
+      }
+
+      setUpdateStatus(
+        'Você já está na versão mais recente',
+        `Versão instalada ${normalizeVersion(currentVersion)}. Nenhuma atualização nova encontrada agora.`
+      );
+    } catch (err) {
+      console.error('Failed to check for updates:', err);
+      latestReleaseUrl = GITHUB_RELEASES_PAGE;
+      setUpdateStatus(
+        'Não foi possível verificar atualizações',
+        'Falha ao consultar o GitHub Releases. Você pode tentar novamente em alguns instantes.'
+      );
+      if (!silent) {
+        showToast('Não foi possível verificar atualizações agora.', 'error');
+      }
+    }
+  }
+
+  async function downloadUpdate() {
+    try {
+      await invoke('open_external_url', { url: latestReleaseUrl || GITHUB_RELEASES_PAGE });
+    } catch (err) {
+      console.error('Failed to open release page:', err);
+      showToast('Erro ao abrir a página de download: ' + err, 'error');
+    }
   }
 
   // ---- Load snippets ----
@@ -1075,6 +1186,10 @@
     categoryFilter().addEventListener('change', renderList);
     sortOrder().addEventListener('change', renderList);
     btnSettings().addEventListener('click', showSettings);
+    btnCheckUpdates().addEventListener('click', () => {
+      checkForUpdates();
+    });
+    btnDownloadUpdate().addEventListener('click', downloadUpdate);
     document.getElementById('btn-close-preview').addEventListener('click', () => {
       document.getElementById('preview-dialog').close();
     });
@@ -1127,6 +1242,9 @@
 
     // Check platform permissions
     checkPlatform();
+
+    // Check app updates in background
+    checkForUpdates({ silent: true });
 
     // Load snippets
     loadSnippets();

@@ -4,6 +4,11 @@ use std::collections::{BTreeSet, HashMap};
 use tauri::{AppHandle, Manager, State};
 
 #[tauri::command]
+pub fn get_app_version() -> String {
+    env!("CARGO_PKG_VERSION").to_string()
+}
+
+#[tauri::command]
 pub fn get_snippets(store: State<'_, SnippetStore>) -> Result<Vec<Snippet>, String> {
     store.get_all()
 }
@@ -490,6 +495,39 @@ pub fn open_system_settings(_app: AppHandle) -> Result<String, String> {
             .spawn();
         Ok("opened".to_string())
     }
+}
+
+#[tauri::command]
+pub fn open_external_url(url: String) -> Result<(), String> {
+    if !matches!(url.split(':').next(), Some("http") | Some("https")) {
+        return Err("Only http and https URLs are supported".to_string());
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("cmd")
+            .args(["/C", "start", "", &url])
+            .spawn()
+            .map_err(|error| format!("Failed to open browser: {error}"))?;
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg(&url)
+            .spawn()
+            .map_err(|error| format!("Failed to open browser: {error}"))?;
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(&url)
+            .spawn()
+            .map_err(|error| format!("Failed to open browser: {error}"))?;
+    }
+
+    Ok(())
 }
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
