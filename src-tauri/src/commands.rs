@@ -1,7 +1,12 @@
 use crate::macro_engine;
-use crate::snippet_store::{MacroAction, Snippet, SnippetInput, SnippetStore};
+use crate::snippet_store::{
+    Category, CategoryIcon, CategorySortMode, LibrarySnapshot, MacroAction, Snippet, SnippetInput,
+    SnippetStore, SnippetView,
+};
 use std::collections::{BTreeSet, HashMap};
+use std::path::PathBuf;
 use tauri::{AppHandle, Manager, State};
+use tauri_plugin_dialog::DialogExt;
 
 #[tauri::command]
 pub fn get_app_version() -> String {
@@ -9,15 +14,20 @@ pub fn get_app_version() -> String {
 }
 
 #[tauri::command]
-pub fn get_snippets(store: State<'_, SnippetStore>) -> Result<Vec<Snippet>, String> {
-    store.get_all()
+pub fn get_snippets(store: State<'_, SnippetStore>) -> Result<Vec<SnippetView>, String> {
+    store.get_picker_snippets()
+}
+
+#[tauri::command]
+pub fn get_library_snapshot(store: State<'_, SnippetStore>) -> Result<LibrarySnapshot, String> {
+    store.get_snapshot()
 }
 
 #[tauri::command]
 pub fn add_snippet(
     trigger: String,
     name: String,
-    category: String,
+    category_id: Option<String>,
     tags: Vec<String>,
     favorite: bool,
     actions: Vec<MacroAction>,
@@ -26,7 +36,7 @@ pub fn add_snippet(
     store.add(SnippetInput {
         trigger,
         name,
-        category,
+        category_id,
         tags,
         favorite,
         actions,
@@ -38,7 +48,7 @@ pub fn update_snippet(
     id: String,
     trigger: String,
     name: String,
-    category: String,
+    category_id: Option<String>,
     tags: Vec<String>,
     favorite: bool,
     actions: Vec<MacroAction>,
@@ -49,7 +59,7 @@ pub fn update_snippet(
         SnippetInput {
             trigger,
             name,
-            category,
+            category_id,
             tags,
             favorite,
             actions,
@@ -111,6 +121,96 @@ pub fn import_snippets(
     store: State<'_, SnippetStore>,
 ) -> Result<usize, String> {
     store.import_json(&content, replace)
+}
+
+#[tauri::command]
+pub fn create_category(
+    name: String,
+    parent_id: Option<String>,
+    icon: Option<CategoryIcon>,
+    store: State<'_, SnippetStore>,
+) -> Result<Category, String> {
+    store.create_category(name, parent_id, icon)
+}
+
+#[tauri::command]
+pub fn update_category(
+    id: String,
+    name: String,
+    parent_id: Option<String>,
+    icon: Option<CategoryIcon>,
+    store: State<'_, SnippetStore>,
+) -> Result<Category, String> {
+    store.update_category(&id, name, parent_id, icon)
+}
+
+#[tauri::command]
+pub fn delete_category(id: String, store: State<'_, SnippetStore>) -> Result<bool, String> {
+    store.delete_category(&id)
+}
+
+#[tauri::command]
+pub fn reorder_categories(
+    parent_id: Option<String>,
+    ordered_ids: Vec<String>,
+    store: State<'_, SnippetStore>,
+) -> Result<Vec<Category>, String> {
+    store.reorder_categories(parent_id, ordered_ids)
+}
+
+#[tauri::command]
+pub fn set_category_sort_mode(
+    parent_id: Option<String>,
+    sort_mode: CategorySortMode,
+    store: State<'_, SnippetStore>,
+) -> Result<(), String> {
+    store.set_category_sort_mode(parent_id, sort_mode)
+}
+
+#[tauri::command]
+pub fn export_backup_to_file(
+    path: String,
+    store: State<'_, SnippetStore>,
+) -> Result<(), String> {
+    store.export_to_file(PathBuf::from(path).as_path())
+}
+
+#[tauri::command]
+pub fn import_backup_from_file(
+    path: String,
+    replace: bool,
+    store: State<'_, SnippetStore>,
+) -> Result<usize, String> {
+    store.import_from_file(PathBuf::from(path).as_path(), replace)
+}
+
+#[tauri::command]
+pub fn choose_backup_export_path(app: AppHandle, suggested_name: String) -> Result<Option<String>, String> {
+    let file_path = app
+        .dialog()
+        .file()
+        .add_filter("JSON", &["json"])
+        .set_file_name(suggested_name)
+        .set_title("Exportar backup")
+        .blocking_save_file();
+
+    Ok(file_path
+        .and_then(|path| path.into_path().ok())
+        .map(|path| path.to_string_lossy().to_string()))
+}
+
+#[tauri::command]
+pub fn choose_backup_import_path(app: AppHandle) -> Result<Option<String>, String> {
+    let file_path = app
+        .dialog()
+        .file()
+        .add_filter("JSON", &["json"])
+        .set_title("Importar backup")
+        .blocking_pick_file();
+
+    Ok(file_path
+        .and_then(|path| path.into_path().ok())
+        .map(|path| path.to_string_lossy().to_string()))
 }
 
 #[tauri::command]

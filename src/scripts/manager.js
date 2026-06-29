@@ -7,10 +7,17 @@
 
   // ---- State ----
   let snippets = [];
+  let categories = [];
   let selectedId = null;
+  let selectedCategoryId = null;
   let isNewSnippet = false;
   let isDirty = false;
   let currentFavorite = false;
+  let currentCategoryId = null;
+  let categoryDialogCurrentId = null;
+  let pendingIconResolve = null;
+  let iconPickerTarget = null;
+  let draggedCategoryId = null;
 
   // ---- DOM refs ----
   const sidebar = () => document.getElementById('snippet-list');
@@ -20,9 +27,8 @@
   const editorTitle = () => document.getElementById('editor-title');
   const triggerInput = () => document.getElementById('input-trigger');
   const nameInput = () => document.getElementById('input-name');
-  const categoryInput = () => document.getElementById('input-category');
+  const categoryDisplayInput = () => document.getElementById('input-category-display');
   const tagsInput = () => document.getElementById('input-tags');
-  const categoryFilter = () => document.getElementById('category-filter');
   const sortOrder = () => document.getElementById('sort-order');
   const btnSave = () => document.getElementById('btn-save');
   const btnDelete = () => document.getElementById('btn-delete');
@@ -37,6 +43,7 @@
   const btnOpenSettings = () => document.getElementById('btn-open-settings');
   const btnCloseBanner = () => document.getElementById('btn-close-banner');
   const btnSettings = () => document.getElementById('btn-settings');
+  const btnManageCategories = () => document.getElementById('btn-manage-categories');
   const settingsPanel = () => document.getElementById('settings-panel');
   const shortcutInput = () => document.getElementById('input-shortcut');
   const btnResetShortcut = () => document.getElementById('btn-reset-shortcut');
@@ -44,6 +51,23 @@
   const updateStatusDescription = () => document.getElementById('update-status-description');
   const btnCheckUpdates = () => document.getElementById('btn-check-updates');
   const btnDownloadUpdate = () => document.getElementById('btn-download-update');
+  const categoryLabel = () => document.getElementById('current-category-label');
+  const btnCategoryBack = () => document.getElementById('btn-category-back');
+  const btnCategorySortMode = () => document.getElementById('btn-category-sort-mode');
+  const btnPickCategory = () => document.getElementById('btn-pick-category');
+  const categoryDialog = () => document.getElementById('category-dialog');
+  const categoryDialogPath = () => document.getElementById('category-dialog-path');
+  const categoryDialogList = () => document.getElementById('category-dialog-list');
+  const btnCategoryDialogBack = () => document.getElementById('btn-category-dialog-back');
+  const iconDialog = () => document.getElementById('icon-dialog');
+  const iconGrid = () => document.getElementById('icon-grid');
+  const iconSearch = () => document.getElementById('icon-search');
+  const emojiInput = () => document.getElementById('emoji-input');
+  const emojiPreview = () => document.getElementById('emoji-preview');
+  const btnIconTabLucide = () => document.getElementById('btn-icon-tab-lucide');
+  const btnIconTabEmoji = () => document.getElementById('btn-icon-tab-emoji');
+  const iconPaneLucide = () => document.getElementById('icon-pane-lucide');
+  const iconPaneEmoji = () => document.getElementById('icon-pane-emoji');
 
   let isMac = navigator.userAgent.indexOf('Mac') !== -1;
   let latestReleaseUrl = '';
@@ -55,6 +79,50 @@
   // ---- Tauri API ----
   function invoke(cmd, args) {
     return window.__TAURI__.core.invoke(cmd, args || {});
+  }
+
+  function getCategoryById(id) {
+    return categories.find(category => category.id === id) || null;
+  }
+
+  function getCategoryPath(id) {
+    if (!id) return '';
+    const parts = [];
+    let cursor = getCategoryById(id);
+    while (cursor) {
+      parts.push(cursor.name);
+      cursor = cursor.parentId ? getCategoryById(cursor.parentId) : null;
+    }
+    return parts.reverse().join(' / ');
+  }
+
+  function getSortModeForParent(parentId) {
+    if (parentId) {
+      return getCategoryById(parentId)?.sortMode || 'manual';
+    }
+    const firstRoot = categories.find(category => !category.parentId);
+    return firstRoot?.sortMode || 'manual';
+  }
+
+  function getVisibleCategories(parentId, searchActive = false) {
+    if (searchActive) return [];
+    const siblings = categories.filter(category => (category.parentId || null) === (parentId || null));
+    if (getSortModeForParent(parentId) === 'alphabetical') {
+      return siblings.sort((a, b) => a.name.localeCompare(b.name, 'pt-BR'));
+    }
+    return siblings.sort((a, b) => {
+      if (a.sortIndex !== b.sortIndex) return a.sortIndex - b.sortIndex;
+      return a.name.localeCompare(b.name, 'pt-BR');
+    });
+  }
+
+  function sortSnippets(items) {
+    return items.sort((a, b) => {
+      if (a.favorite !== b.favorite) return a.favorite ? -1 : 1;
+      if (sortOrder().value === 'used') return (b.usageCount || 0) - (a.usageCount || 0);
+      if (sortOrder().value === 'name') return a.name.localeCompare(b.name, 'pt-BR');
+      return (b.updatedAt || b.createdAt).localeCompare(a.updatedAt || a.createdAt);
+    });
   }
 
   // ---- Toast notifications ----
@@ -176,52 +244,57 @@
   // ---- Load snippets ----
   async function loadSnippets() {
     try {
-      snippets = await invoke('get_snippets');
+      const snapshot = await invoke('get_library_snapshot');
+      snippets = snapshot.snippets || [];
+      categories = snapshot.categories || [];
     } catch (err) {
-      console.error('Failed to load snippets:', err);
+      console.error('Failed to load library:', err);
       snippets = [];
+      categories = [];
     }
-    updateCategoryFilter();
+    if (selectedId && !snippets.some(snippet => snippet.id === selectedId)) {
+      selectedId = null;
+      isNewSnippet = false;
+    }
+    if (selectedCategoryId && !categories.some(category => category.id === selectedCategoryId)) {
+      selectedCategoryId = null;
+    }
+    updateCategoryDisplay();
+    updateCategoryToolbar();
     renderList();
   }
 
-  function updateCategoryFilter() {
-    const select = categoryFilter();
-    const selected = select.value;
-    const categories = [...new Set(snippets.map(s => s.category).filter(Boolean))]
-      .sort((a, b) => a.localeCompare(b, 'pt-BR'));
-    select.innerHTML = '<option value="">Todas as categorias</option>' +
-      categories.map(category => `<option value="${escapeHtml(category)}">${escapeHtml(category)}</option>`).join('');
-    select.value = categories.includes(selected) ? selected : '';
+  function updateCategoryToolbar() {
+    categoryLabel().textContent = getCategoryPath(currentCategoryId) || 'Raiz';
+    btnCategoryBack().style.display = currentCategoryId ? 'inline-flex' : 'none';
+    btnCategorySortMode().textContent = getSortModeForParent(currentCategoryId) === 'alphabetical' ? 'A-Z' : 'Manual';
   }
 
   // ---- Render snippet list ----
   function renderList() {
     const list = sidebar();
     const filter = (searchInput().value || '').toLowerCase().trim();
-    const category = categoryFilter().value;
+    const isSearch = Boolean(filter);
+    let filtered = isSearch
+      ? snippets.filter(snippet =>
+          snippet.trigger.toLowerCase().includes(filter) ||
+          snippet.name.toLowerCase().includes(filter) ||
+          (snippet.categoryPath || '').toLowerCase().includes(filter) ||
+          (snippet.tags || []).some(tag => tag.toLowerCase().includes(filter))
+        )
+      : snippets.filter(snippet => (snippet.categoryId || null) === (currentCategoryId || null));
 
-    let filtered = snippets.filter(snippet => !category || snippet.category === category);
     if (filter) {
-      filtered = filtered.filter(s =>
-        s.trigger.toLowerCase().includes(filter) ||
-        s.name.toLowerCase().includes(filter) ||
-        (s.category || '').toLowerCase().includes(filter) ||
-        (s.tags || []).some(tag => tag.toLowerCase().includes(filter))
-      );
+      filtered = filtered.filter(Boolean);
     }
-    filtered.sort((a, b) => {
-      if (a.favorite !== b.favorite) return a.favorite ? -1 : 1;
-      if (sortOrder().value === 'used') return (b.usage_count || 0) - (a.usage_count || 0);
-      if (sortOrder().value === 'name') return a.name.localeCompare(b.name, 'pt-BR');
-      return (b.updated_at || b.created_at).localeCompare(a.updated_at || a.created_at);
-    });
+    filtered = sortSnippets(filtered);
+    const visibleCategories = getVisibleCategories(currentCategoryId, isSearch);
 
-    if (filtered.length === 0) {
+    if (filtered.length === 0 && visibleCategories.length === 0) {
       list.innerHTML = `
         <div class="snippet-list-empty">
           <div class="empty-icon"><i data-lucide="clipboard-list"></i></div>
-          ${filter ? 'Nenhum snippet encontrado' : 'Nenhum snippet ainda.<br>Crie o primeiro!'}
+          ${filter ? 'Nenhum snippet encontrado' : currentCategoryId ? 'Esta pasta está vazia.' : 'Nenhum snippet ainda.<br>Crie o primeiro!'}
         </div>
       `;
       if (window.lucide) {
@@ -230,17 +303,73 @@
       return;
     }
 
-    list.innerHTML = filtered.map(s => `
-      <div class="snippet-item ${s.id === selectedId ? 'active' : ''}"
-           data-id="${s.id}">
-        <div class="snippet-trigger">${s.favorite ? '★ ' : ''}${escapeHtml(s.trigger)}</div>
-        <div class="snippet-name">${escapeHtml(s.name)}</div>
-        <div class="snippet-meta">${escapeHtml(s.category || 'Sem categoria')} · ${s.usage_count || 0} usos</div>
+    const categoryMarkup = visibleCategories.map(category => `
+      <div class="snippet-item category-item" data-category-id="${category.id}" draggable="${!isSearch && getSortModeForParent(currentCategoryId) === 'manual'}">
+        <div class="snippet-item-main">
+          <span class="snippet-item-icon ${category.icon.kind === 'emoji' ? 'emoji' : ''}">
+            ${category.icon.kind === 'emoji' ? escapeHtml(category.icon.value) : `<i data-lucide="${escapeHtml(category.icon.value || 'folder')}"></i>`}
+          </span>
+          <div class="snippet-item-copy">
+            <div class="snippet-trigger">${escapeHtml(category.name)}</div>
+            <div class="snippet-meta">${escapeHtml(getCategoryPath(category.id) || category.name)}</div>
+          </div>
+        </div>
+        <i data-lucide="chevron-right"></i>
       </div>
     `).join('');
 
-    // Click handlers
+    const snippetMarkup = filtered.map(s => `
+      <div class="snippet-item ${s.id === selectedId ? 'active' : ''}" data-id="${s.id}">
+        <div class="snippet-trigger">${s.favorite ? '★ ' : ''}${escapeHtml(s.trigger)}</div>
+        <div class="snippet-name">${escapeHtml(s.name)}</div>
+        <div class="snippet-meta">${escapeHtml(s.categoryPath || 'Sem categoria')} · ${s.usageCount || 0} usos</div>
+      </div>
+    `).join('');
+
+    list.innerHTML = categoryMarkup + snippetMarkup;
+
+    list.querySelectorAll('.category-item').forEach(item => {
+      item.addEventListener('click', () => {
+        currentCategoryId = item.dataset.categoryId;
+        updateCategoryToolbar();
+        renderList();
+      });
+      if (getSortModeForParent(currentCategoryId) === 'manual' && !isSearch) {
+        item.addEventListener('dragstart', () => {
+          draggedCategoryId = item.dataset.categoryId;
+          item.classList.add('dragging');
+        });
+        item.addEventListener('dragend', () => {
+          draggedCategoryId = null;
+          item.classList.remove('dragging');
+          list.querySelectorAll('.drop-target').forEach(node => node.classList.remove('drop-target'));
+        });
+        item.addEventListener('dragover', event => {
+          event.preventDefault();
+          item.classList.add('drop-target');
+        });
+        item.addEventListener('dragleave', () => item.classList.remove('drop-target'));
+        item.addEventListener('drop', async event => {
+          event.preventDefault();
+          item.classList.remove('drop-target');
+          if (!draggedCategoryId || draggedCategoryId === item.dataset.categoryId) return;
+          const reorderedIds = visibleCategories.map(category => category.id);
+          const from = reorderedIds.indexOf(draggedCategoryId);
+          const to = reorderedIds.indexOf(item.dataset.categoryId);
+          if (from < 0 || to < 0) return;
+          reorderedIds.splice(to, 0, reorderedIds.splice(from, 1)[0]);
+          try {
+            await invoke('reorder_categories', { parentId: currentCategoryId, orderedIds: reorderedIds });
+            await loadSnippets();
+          } catch (err) {
+            showToast('Erro ao reordenar categorias: ' + err, 'error');
+          }
+        });
+      }
+    });
+
     list.querySelectorAll('.snippet-item').forEach(item => {
+      if (!item.dataset.id) return;
       item.addEventListener('click', () => {
         selectSnippet(item.dataset.id);
       });
@@ -291,7 +420,8 @@
     editorTitle().textContent = 'Editar Snippet';
     triggerInput().value = snippet.trigger;
     nameInput().value = snippet.name;
-    categoryInput().value = snippet.category || '';
+    selectedCategoryId = snippet.categoryId || null;
+    updateCategoryDisplay();
     tagsInput().value = (snippet.tags || []).join(', ');
     currentFavorite = Boolean(snippet.favorite);
     updateFavoriteButton();
@@ -317,7 +447,8 @@
     editorTitle().textContent = 'Novo Snippet';
     triggerInput().value = '';
     nameInput().value = '';
-    categoryInput().value = '';
+    selectedCategoryId = null;
+    updateCategoryDisplay();
     tagsInput().value = '';
     currentFavorite = false;
     updateFavoriteButton();
@@ -335,7 +466,6 @@
   async function saveSnippet() {
     const trigger = triggerInput().value.trim();
     const name = nameInput().value.trim();
-    const category = categoryInput().value.trim();
     const tags = tagsInput().value.split(',').map(tag => tag.trim()).filter(Boolean);
 
     if (!trigger) {
@@ -361,7 +491,7 @@
         const created = await invoke('add_snippet', {
           trigger,
           name,
-          category,
+          categoryId: selectedCategoryId,
           tags,
           favorite: currentFavorite,
           actions,
@@ -374,7 +504,7 @@
           id: selectedId,
           trigger,
           name,
-          category,
+          categoryId: selectedCategoryId,
           tags,
           favorite: currentFavorite,
           actions,
@@ -462,30 +592,205 @@
 
   async function exportSnippets() {
     try {
-      const content = await invoke('export_snippets');
-      const blob = new Blob([content], { type: 'application/json' });
-      const link = document.createElement('a');
-      link.href = URL.createObjectURL(blob);
-      link.download = `guepardosys-snip-${new Date().toISOString().slice(0, 10)}.json`;
-      link.click();
-      URL.revokeObjectURL(link.href);
+      const path = await invoke('choose_backup_export_path', {
+        suggestedName: `guepardosys-snip-backup-${new Date().toISOString().slice(0, 10)}.json`
+      });
+      if (!path) return;
+      await invoke('export_backup_to_file', { path });
       showToast('Backup exportado!');
     } catch (err) {
       showToast('Erro ao exportar: ' + err, 'error');
     }
   }
 
-  async function importSnippets(file) {
-    if (!file) return;
+  async function importSnippets() {
     const replace = window.confirm('OK: substituir todos os snippets atuais. Cancelar: mesclar com os existentes.');
     try {
-      const count = await invoke('import_snippets', { content: await file.text(), replace });
+      const path = await invoke('choose_backup_import_path');
+      if (!path) return;
+      const count = await invoke('import_backup_from_file', { path, replace });
       await loadSnippets();
       showPanel('empty');
       showToast(`${count} snippet(s) importado(s)!`);
     } catch (err) {
       showToast('Erro ao importar: ' + err, 'error');
     }
+  }
+
+  function updateCategoryDisplay() {
+    categoryDisplayInput().value = getCategoryPath(selectedCategoryId) || '';
+    categoryDisplayInput().placeholder = 'Sem categoria';
+  }
+
+  async function toggleCurrentSortMode() {
+    const next = getSortModeForParent(currentCategoryId) === 'alphabetical' ? 'manual' : 'alphabetical';
+    try {
+      await invoke('set_category_sort_mode', { parentId: currentCategoryId, sortMode: next });
+      await loadSnippets();
+    } catch (err) {
+      showToast('Erro ao alterar ordenação das pastas: ' + err, 'error');
+    }
+  }
+
+  function openCategoryDialog() {
+    categoryDialogCurrentId = selectedCategoryId || currentCategoryId || null;
+    renderCategoryDialog();
+    categoryDialog().showModal();
+  }
+
+  function renderCategoryDialog() {
+    categoryDialogPath().textContent = getCategoryPath(categoryDialogCurrentId) || 'Raiz';
+    btnCategoryDialogBack().style.display = categoryDialogCurrentId ? 'inline-flex' : 'none';
+    const children = getVisibleCategories(categoryDialogCurrentId, false);
+    if (children.length === 0) {
+      categoryDialogList().innerHTML = '<div class="snippet-list-empty">Nenhuma categoria neste nível.</div>';
+      if (window.lucide) window.lucide.createIcons();
+      return;
+    }
+
+    categoryDialogList().innerHTML = children.map(category => `
+      <div class="category-dialog-item" data-id="${category.id}">
+        <span class="snippet-item-icon ${category.icon.kind === 'emoji' ? 'emoji' : ''}">
+          ${category.icon.kind === 'emoji' ? escapeHtml(category.icon.value) : `<i data-lucide="${escapeHtml(category.icon.value || 'folder')}"></i>`}
+        </span>
+        <div class="category-dialog-item-copy">
+          <div class="category-dialog-item-name">${escapeHtml(category.name)}</div>
+          <div class="category-dialog-item-path">${escapeHtml(getCategoryPath(category.id) || category.name)}</div>
+        </div>
+        <div class="category-dialog-item-actions">
+          <button class="btn btn-secondary btn-sm" type="button" data-action="open">Abrir</button>
+          <button class="btn btn-secondary btn-sm" type="button" data-action="select">Selecionar</button>
+          <button class="btn btn-secondary btn-sm" type="button" data-action="rename">Renomear</button>
+          <button class="btn btn-secondary btn-sm" type="button" data-action="icon">Ícone</button>
+          <button class="btn btn-danger btn-sm" type="button" data-action="delete">Excluir</button>
+        </div>
+      </div>
+    `).join('');
+
+    categoryDialogList().querySelectorAll('.category-dialog-item').forEach(item => {
+      item.querySelectorAll('button[data-action]').forEach(button => {
+        button.addEventListener('click', () => handleCategoryDialogAction(item.dataset.id, button.dataset.action));
+      });
+    });
+
+    if (window.lucide) window.lucide.createIcons();
+  }
+
+  async function handleCategoryDialogAction(id, action) {
+    const category = getCategoryById(id);
+    if (!category) return;
+    if (action === 'open') {
+      categoryDialogCurrentId = id;
+      renderCategoryDialog();
+      return;
+    }
+    if (action === 'select') {
+      selectedCategoryId = id;
+      updateCategoryDisplay();
+      isDirty = true;
+      categoryDialog().close();
+      return;
+    }
+    if (action === 'rename') {
+      const name = window.prompt('Novo nome da categoria:', category.name);
+      if (!name) return;
+      try {
+        await invoke('update_category', { id, name, parentId: category.parentId || null, icon: category.icon });
+        await loadSnippets();
+        renderCategoryDialog();
+      } catch (err) {
+        showToast('Erro ao renomear categoria: ' + err, 'error');
+      }
+      return;
+    }
+    if (action === 'icon') {
+      const icon = await openIconPicker(category.icon);
+      if (!icon) return;
+      try {
+        await invoke('update_category', { id, name: category.name, parentId: category.parentId || null, icon });
+        await loadSnippets();
+        renderCategoryDialog();
+      } catch (err) {
+        showToast('Erro ao atualizar ícone: ' + err, 'error');
+      }
+      return;
+    }
+    if (action === 'delete') {
+      if (!window.confirm(`Excluir a categoria "${category.name}"?`)) return;
+      try {
+        await invoke('delete_category', { id });
+        if (selectedCategoryId === id) {
+          selectedCategoryId = null;
+          updateCategoryDisplay();
+        }
+        await loadSnippets();
+        renderCategoryDialog();
+      } catch (err) {
+        showToast('Erro ao excluir categoria: ' + err, 'error');
+      }
+    }
+  }
+
+  async function createCategoryAtCurrentLevel() {
+    const name = window.prompt('Nome da nova categoria:');
+    if (!name) return;
+    const icon = await openIconPicker({ kind: 'lucide', value: 'folder' });
+    if (!icon) return;
+    try {
+      await invoke('create_category', { name, parentId: categoryDialogCurrentId, icon });
+      await loadSnippets();
+      renderCategoryDialog();
+    } catch (err) {
+      showToast('Erro ao criar categoria: ' + err, 'error');
+    }
+  }
+
+  function switchIconTab(tab) {
+    const isLucide = tab === 'lucide';
+    btnIconTabLucide().classList.toggle('active', isLucide);
+    btnIconTabEmoji().classList.toggle('active', !isLucide);
+    iconPaneLucide().hidden = !isLucide;
+    iconPaneEmoji().hidden = isLucide;
+  }
+
+  function renderIconGrid() {
+    const filter = (iconSearch().value || '').toLowerCase().trim();
+    const iconNames = Object.keys((window.lucide && window.lucide.icons) || {})
+      .filter(name => name.toLowerCase().includes(filter))
+      .slice(0, 200);
+    iconGrid().innerHTML = iconNames.map(name => `
+      <button class="icon-option" type="button" data-icon="${escapeHtml(name)}">
+        <i data-lucide="${escapeHtml(name)}"></i>
+        <span class="icon-option-label">${escapeHtml(name)}</span>
+      </button>
+    `).join('');
+    iconGrid().querySelectorAll('.icon-option').forEach(button => {
+      button.addEventListener('click', () => {
+        resolveIconPicker({ kind: 'lucide', value: button.dataset.icon });
+      });
+    });
+    if (window.lucide) window.lucide.createIcons();
+  }
+
+  function openIconPicker(initialIcon) {
+    iconPickerTarget = initialIcon || { kind: 'lucide', value: 'folder' };
+    emojiInput().value = iconPickerTarget.kind === 'emoji' ? iconPickerTarget.value : '📁';
+    emojiPreview().textContent = emojiInput().value || '📁';
+    iconSearch().value = '';
+    switchIconTab(iconPickerTarget.kind === 'emoji' ? 'emoji' : 'lucide');
+    renderIconGrid();
+    iconDialog().showModal();
+    return new Promise(resolve => {
+      pendingIconResolve = resolve;
+    });
+  }
+
+  function resolveIconPicker(icon) {
+    if (pendingIconResolve) {
+      pendingIconResolve(icon);
+      pendingIconResolve = null;
+    }
+    iconDialog().close();
   }
 
   // ---- Settings Panel Logic ----
@@ -1183,8 +1488,16 @@
     btnFavorite().addEventListener('click', toggleFavorite);
     btnPreview().addEventListener('click', previewSnippet);
     searchInput().addEventListener('input', renderList);
-    categoryFilter().addEventListener('change', renderList);
     sortOrder().addEventListener('change', renderList);
+    btnCategoryBack().addEventListener('click', () => {
+      const parent = getCategoryById(currentCategoryId)?.parentId || null;
+      currentCategoryId = parent;
+      updateCategoryToolbar();
+      renderList();
+    });
+    btnCategorySortMode().addEventListener('click', toggleCurrentSortMode);
+    btnPickCategory().addEventListener('click', openCategoryDialog);
+    btnManageCategories().addEventListener('click', openCategoryDialog);
     btnSettings().addEventListener('click', showSettings);
     btnCheckUpdates().addEventListener('click', () => {
       checkForUpdates();
@@ -1194,15 +1507,31 @@
       document.getElementById('preview-dialog').close();
     });
     document.getElementById('btn-export').addEventListener('click', exportSnippets);
-    document.getElementById('btn-import').addEventListener('click', () => {
-      document.getElementById('input-import-file').click();
+    document.getElementById('btn-import').addEventListener('click', importSnippets);
+    document.getElementById('btn-close-category-dialog').addEventListener('click', () => categoryDialog().close());
+    btnCategoryDialogBack().addEventListener('click', () => {
+      categoryDialogCurrentId = getCategoryById(categoryDialogCurrentId)?.parentId || null;
+      renderCategoryDialog();
     });
-    document.getElementById('input-import-file').addEventListener('change', event => {
-      importSnippets(event.target.files[0]);
-      event.target.value = '';
+    document.getElementById('btn-category-dialog-new').addEventListener('click', createCategoryAtCurrentLevel);
+    document.getElementById('btn-category-dialog-none').addEventListener('click', () => {
+      selectedCategoryId = null;
+      updateCategoryDisplay();
+      isDirty = true;
+      categoryDialog().close();
+    });
+    document.getElementById('btn-close-icon-dialog').addEventListener('click', () => resolveIconPicker(null));
+    btnIconTabLucide().addEventListener('click', () => switchIconTab('lucide'));
+    btnIconTabEmoji().addEventListener('click', () => switchIconTab('emoji'));
+    iconSearch().addEventListener('input', renderIconGrid);
+    emojiInput().addEventListener('input', () => {
+      emojiPreview().textContent = emojiInput().value || '📁';
+    });
+    document.getElementById('btn-apply-emoji').addEventListener('click', () => {
+      resolveIconPicker({ kind: 'emoji', value: emojiInput().value || '📁' });
     });
 
-    [triggerInput(), nameInput(), categoryInput(), tagsInput(), document.getElementById('macro-editor-container')]
+    [triggerInput(), nameInput(), tagsInput(), document.getElementById('macro-editor-container')]
       .forEach(element => {
         element.addEventListener('input', () => {
           if (editorPanel().classList.contains('visible')) isDirty = true;

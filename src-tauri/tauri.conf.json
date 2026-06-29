@@ -4,7 +4,10 @@
   "version": "0.0.1",
   "identifier": "com.guepardosys.snip",
   "build": {
-    "frontendDist": "../src"
+    "beforeDevCommand": "bun run dev",
+    "beforeBuildCommand": "bun run build:web",
+    "devUrl": "http://127.0.0.1:1420",
+    "frontendDist": "../dist"
   },
   "app": {
     "withGlobalTauri": true,

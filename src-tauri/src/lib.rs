@@ -90,6 +90,7 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
@@ -117,6 +118,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::get_app_version,
             commands::get_snippets,
+            commands::get_library_snapshot,
             commands::add_snippet,
             commands::update_snippet,
             commands::delete_snippet,
@@ -125,6 +127,15 @@ pub fn run() {
             commands::set_snippet_favorite,
             commands::export_snippets,
             commands::import_snippets,
+            commands::create_category,
+            commands::update_category,
+            commands::delete_category,
+            commands::reorder_categories,
+            commands::set_category_sort_mode,
+            commands::export_backup_to_file,
+            commands::import_backup_from_file,
+            commands::choose_backup_export_path,
+            commands::choose_backup_import_path,
             commands::get_snippet_variables,
             commands::hide_picker,
             commands::show_manager,

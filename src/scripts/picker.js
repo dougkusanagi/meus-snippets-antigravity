@@ -50,7 +50,8 @@
       filtered = snippets.filter(s =>
         s.trigger.toLowerCase().startsWith(query) ||
         s.name.toLowerCase().includes(query) ||
-        (s.category || '').toLowerCase().includes(query) ||
+        (s.categoryPath || '').toLowerCase().includes(query) ||
+        (s.categoryName || '').toLowerCase().includes(query) ||
         (s.tags || []).some(tag => tag.toLowerCase().includes(query))
       );
     } else {
