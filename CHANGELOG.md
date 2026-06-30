@@ -18,6 +18,7 @@ Este projeto segue SemVer e mantem um changelog unico em ordem da release mais r
 - Controle de ordenacao dos snippets movido para um menu dropdown de icone ao lado da busca, liberando espaco na barra lateral e mantendo as opcoes visiveis apenas ao abrir o menu.
 - Barra de `Pasta atual` estabilizada com botao de voltar fixo em formato de icone, evitando que o titulo deslize ao entrar ou sair da raiz.
 - Navegacao lateral refinada com icone de raiz mais claro na pasta inicial e cards de categoria totalmente clicaveis na sidebar.
+- Workflow do GitHub Actions mantido com definicoes para Windows, Linux e macOS, mas com os jobs de Linux e macOS desativados no servidor.
 
 ### Fixed
 
