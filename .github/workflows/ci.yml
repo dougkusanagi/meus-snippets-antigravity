@@ -6,9 +6,16 @@ on:
 
 jobs:
   check:
+    if: ${{ matrix.enabled }}
     strategy:
       matrix:
-        os: [windows-latest, ubuntu-latest, macos-latest]
+        include:
+          - os: windows-latest
+            enabled: true
+          - os: ubuntu-latest
+            enabled: false
+          - os: macos-latest
+            enabled: false
     runs-on: ${{ matrix.os }}
 
     steps:

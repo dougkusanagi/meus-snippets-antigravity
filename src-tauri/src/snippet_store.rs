@@ -162,6 +162,11 @@ struct StoreData {
     migrated: bool,
 }
 
+#[derive(Debug, Clone, Copy)]
+enum ExternalSnippetFormat {
+    TextExpanderCsv,
+}
+
 #[derive(Debug, Deserialize)]
 struct LegacyStoreFile {
     version: u32,
@@ -502,7 +507,10 @@ impl SnippetStore {
                 .categories
                 .lock()
                 .map_err(|_| "Falha ao bloquear categorias".to_string())?;
-            if categories.iter().any(|category| category.parent_id.as_deref() == Some(id)) {
+            if categories
+                .iter()
+                .any(|category| category.parent_id.as_deref() == Some(id))
+            {
                 return Err("A categoria possui subcategorias".to_string());
             }
         }
@@ -512,7 +520,10 @@ impl SnippetStore {
                 .snippets
                 .lock()
                 .map_err(|_| "Falha ao bloquear armazenamento".to_string())?;
-            if snippets.iter().any(|snippet| snippet.category_id.as_deref() == Some(id)) {
+            if snippets
+                .iter()
+                .any(|snippet| snippet.category_id.as_deref() == Some(id))
+            {
                 return Err("A categoria possui snippets vinculados".to_string());
             }
         }
@@ -554,7 +565,10 @@ impl SnippetStore {
                 return Err("A nova ordem não corresponde às categorias irmãs".to_string());
             }
             let sibling_set: HashSet<&str> = siblings.iter().map(String::as_str).collect();
-            if ordered_ids.iter().any(|id| !sibling_set.contains(id.as_str())) {
+            if ordered_ids
+                .iter()
+                .any(|id| !sibling_set.contains(id.as_str()))
+            {
                 return Err("A ordem contém categorias inválidas".to_string());
             }
 
@@ -596,7 +610,10 @@ impl SnippetStore {
                 parent.sort_mode = sort_mode;
                 parent.updated_at = Utc::now().to_rfc3339();
             } else {
-                for category in categories.iter_mut().filter(|category| category.parent_id.is_none()) {
+                for category in categories
+                    .iter_mut()
+                    .filter(|category| category.parent_id.is_none())
+                {
                     category.sort_mode = sort_mode.clone();
                     category.updated_at = Utc::now().to_rfc3339();
                 }
@@ -628,6 +645,25 @@ impl SnippetStore {
 
     pub fn import_json(&self, content: &str, replace: bool) -> Result<usize, String> {
         let incoming = Self::read_store_content(content)?;
+        self.import_store_data(incoming, replace)
+    }
+
+    pub fn import_textexpander_csv_from_file(
+        &self,
+        path: &Path,
+        replace: bool,
+    ) -> Result<usize, String> {
+        let content = fs::read_to_string(path)
+            .map_err(|e| format!("Falha ao ler CSV do TextExpander: {e}"))?;
+        let incoming = Self::read_external_snippets_content(
+            &content,
+            path,
+            ExternalSnippetFormat::TextExpanderCsv,
+        )?;
+        self.import_store_data(incoming, replace)
+    }
+
+    fn import_store_data(&self, incoming: StoreData, replace: bool) -> Result<usize, String> {
         let imported_count = incoming.snippets.len();
 
         if replace {
@@ -715,8 +751,10 @@ impl SnippetStore {
                 item.id == snippet.id || item.trigger.eq_ignore_ascii_case(&snippet.trigger)
             }) {
                 snippet.id = Uuid::new_v4().to_string();
-                snippet.trigger =
-                    Self::unique_trigger_in(&merged_snippets, &format!("{}-importado", snippet.trigger));
+                snippet.trigger = Self::unique_trigger_in(
+                    &merged_snippets,
+                    &format!("{}-importado", snippet.trigger),
+                );
             }
             merged_snippets.push(snippet);
         }
@@ -790,6 +828,166 @@ impl SnippetStore {
         })
     }
 
+    fn read_external_snippets_content(
+        content: &str,
+        path: &Path,
+        format: ExternalSnippetFormat,
+    ) -> Result<StoreData, String> {
+        match format {
+            ExternalSnippetFormat::TextExpanderCsv => {
+                Self::read_textexpander_csv_content(content, path)
+            }
+        }
+    }
+
+    fn read_textexpander_csv_content(content: &str, path: &Path) -> Result<StoreData, String> {
+        let category_name = path
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("TextExpander");
+        let category_name = Self::normalize_category_name(category_name)?;
+        let category_id = Uuid::new_v4().to_string();
+        let now = Utc::now().to_rfc3339();
+        let category = Category {
+            id: category_id.clone(),
+            name: category_name,
+            parent_id: None,
+            icon: CategoryIcon::default(),
+            sort_mode: CategorySortMode::Manual,
+            sort_index: 0,
+            created_at: now.clone(),
+            updated_at: now.clone(),
+        };
+
+        let mut reader = csv::ReaderBuilder::new()
+            .flexible(true)
+            .has_headers(false)
+            .from_reader(content.as_bytes());
+        let records = reader
+            .records()
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| format!("CSV do TextExpander inválido: {e}"))?;
+
+        if records.is_empty() {
+            return Err("Nenhum snippet válido foi encontrado no CSV do TextExpander".to_string());
+        }
+
+        let first_row = records[0]
+            .iter()
+            .map(Self::normalize_external_header)
+            .collect::<Vec<_>>();
+        let has_header_row =
+            Self::find_header_index(&first_row, &["abbreviation", "shortcut", "trigger", "key"])
+                .is_some()
+                || Self::find_header_index(
+                    &first_row,
+                    &["snippet", "content", "expansion", "text", "plaincontent"],
+                )
+                .is_some();
+
+        let headers = if has_header_row {
+            first_row
+        } else {
+            Vec::new()
+        };
+
+        let trigger_index = if has_header_row {
+            Self::find_header_index(&headers, &["abbreviation", "shortcut", "trigger", "key"])
+                .or_else(|| (headers.len() >= 2).then_some(0))
+        } else {
+            (records[0].len() >= 1).then_some(0)
+        };
+        let content_index = if has_header_row {
+            Self::find_header_index(
+                &headers,
+                &["snippet", "content", "expansion", "text", "plaincontent"],
+            )
+            .or_else(|| (headers.len() >= 2).then_some(1))
+        } else {
+            (records[0].len() >= 2).then_some(1)
+        };
+        let name_index = if has_header_row {
+            Self::find_header_index(&headers, &["label", "name", "title", "description"])
+                .or_else(|| (headers.len() >= 3).then_some(2))
+        } else {
+            (records[0].len() >= 3).then_some(2)
+        };
+
+        if (has_header_row && headers.len() < 2)
+            || trigger_index.is_none()
+            || content_index.is_none()
+        {
+            return Err(
+                "CSV do TextExpander sem colunas reconhecidas. Esperado: abbreviation e snippet/content."
+                    .to_string(),
+            );
+        }
+
+        let mut snippets = Vec::new();
+        let data_start = if has_header_row { 1 } else { 0 };
+        for (record_index, record) in records.iter().enumerate().skip(data_start) {
+            let trigger = record
+                .get(trigger_index.unwrap())
+                .map(str::trim)
+                .unwrap_or_default()
+                .to_string();
+            let value = record
+                .get(content_index.unwrap())
+                .unwrap_or_default()
+                .to_string();
+            if trigger.is_empty() && value.trim().is_empty() {
+                continue;
+            }
+            if trigger.is_empty() {
+                return Err(format!(
+                    "Linha {} do CSV do TextExpander está sem abbreviation",
+                    record_index + 1
+                ));
+            }
+            if value.trim().is_empty() {
+                return Err(format!(
+                    "Linha {} do CSV do TextExpander está sem conteúdo",
+                    record_index + 1
+                ));
+            }
+
+            let fallback_name = format!("Snippet {}", record_index + 1);
+            let raw_name = name_index
+                .and_then(|index| record.get(index))
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .unwrap_or(&fallback_name);
+
+            let snippet = Self::normalize_snippet(Snippet {
+                id: Uuid::new_v4().to_string(),
+                trigger,
+                name: raw_name.to_string(),
+                category_id: Some(category_id.clone()),
+                category: String::new(),
+                tags: vec!["textexpander".to_string()],
+                favorite: false,
+                actions: Self::parse_textexpander_actions(&value),
+                created_at: now.clone(),
+                updated_at: now.clone(),
+                usage_count: 0,
+                last_used_at: None,
+            })?;
+            snippets.push(snippet);
+        }
+
+        if snippets.is_empty() {
+            return Err("Nenhum snippet válido foi encontrado no CSV do TextExpander".to_string());
+        }
+
+        Ok(StoreData {
+            snippets,
+            categories: vec![category],
+            migrated: false,
+        })
+    }
+
     fn save_to_disk(&self) -> Result<(), String> {
         let snippets = self
             .snippets
@@ -856,6 +1054,183 @@ impl SnippetStore {
             return Err(error);
         }
         Ok(())
+    }
+
+    fn normalize_external_header(value: &str) -> String {
+        value
+            .trim()
+            .chars()
+            .filter(|character| character.is_alphanumeric())
+            .flat_map(char::to_lowercase)
+            .collect()
+    }
+
+    fn find_header_index(headers: &[String], candidates: &[&str]) -> Option<usize> {
+        headers.iter().position(|header| {
+            candidates
+                .iter()
+                .any(|candidate| header == &Self::normalize_external_header(candidate))
+        })
+    }
+
+    fn parse_textexpander_actions(content: &str) -> Vec<MacroAction> {
+        let mut actions = Vec::new();
+        let mut buffer = String::new();
+        let bytes = content.as_bytes();
+        let mut cursor = 0;
+
+        while cursor < bytes.len() {
+            let remaining = &content[cursor..];
+
+            if remaining.starts_with("%%") {
+                buffer.push('%');
+                cursor += 2;
+                continue;
+            }
+
+            if remaining.starts_with("%clipboard") {
+                buffer.push_str("{{clipboard}}");
+                cursor += "%clipboard".len();
+                continue;
+            }
+
+            if remaining.starts_with("%|") {
+                buffer.push_str("{{cursor}}");
+                cursor += 2;
+                continue;
+            }
+
+            if remaining.starts_with("%\\") {
+                cursor += 2;
+                continue;
+            }
+
+            if remaining.starts_with("%key:") {
+                let token_start = cursor;
+                let token_body_start = cursor + "%key:".len();
+                if let Some(token_end_relative) = content[token_body_start..].find('%') {
+                    let token_end = token_body_start + token_end_relative;
+                    let token_body = &content[token_body_start..token_end];
+
+                    if let Some(action) = Self::parse_textexpander_key_action(token_body) {
+                        if !buffer.is_empty() {
+                            actions.push(MacroAction::Text {
+                                value: std::mem::take(&mut buffer),
+                            });
+                        }
+                        actions.push(action);
+                        cursor = token_end + 1;
+                        continue;
+                    }
+                }
+
+                buffer.push_str("%key:");
+                cursor = token_start + "%key:".len();
+                continue;
+            }
+
+            let character = remaining.chars().next().unwrap();
+            buffer.push(character);
+            cursor += character.len_utf8();
+        }
+
+        if !buffer.is_empty() {
+            actions.push(MacroAction::Text { value: buffer });
+        }
+
+        let actions = Self::compact_text_actions(actions);
+        if actions.is_empty() {
+            vec![MacroAction::Text {
+                value: content.to_string(),
+            }]
+        } else {
+            actions
+        }
+    }
+
+    fn parse_textexpander_key_action(token_body: &str) -> Option<MacroAction> {
+        let normalized = token_body.trim();
+        if normalized.is_empty() {
+            return None;
+        }
+
+        let parts = normalized
+            .split(|character: char| {
+                character == '+' || character == '-' || character.is_whitespace()
+            })
+            .map(str::trim)
+            .filter(|part| !part.is_empty())
+            .collect::<Vec<_>>();
+        if parts.is_empty() {
+            return None;
+        }
+
+        let key = Self::normalize_textexpander_key(parts.last().copied()?)?;
+        let modifiers = parts[..parts.len() - 1]
+            .iter()
+            .map(|part| Self::normalize_textexpander_modifier(part))
+            .collect::<Option<Vec<_>>>()?;
+
+        Some(MacroAction::Key {
+            key,
+            modifiers: (!modifiers.is_empty()).then_some(modifiers),
+        })
+    }
+
+    fn normalize_textexpander_modifier(value: &str) -> Option<String> {
+        match value.trim().to_lowercase().as_str() {
+            "ctrl" | "control" => Some("Ctrl".to_string()),
+            "shift" => Some("Shift".to_string()),
+            "alt" | "option" => Some("Alt".to_string()),
+            "cmd" | "command" | "meta" | "super" => Some("Meta".to_string()),
+            _ => None,
+        }
+    }
+
+    fn normalize_textexpander_key(value: &str) -> Option<String> {
+        let trimmed = value.trim();
+        let lower = trimmed.to_lowercase();
+        let key = match lower.as_str() {
+            "enter" | "return" => "Enter".to_string(),
+            "tab" => "Tab".to_string(),
+            "backspace" => "Backspace".to_string(),
+            "delete" | "del" => "Delete".to_string(),
+            "escape" | "esc" => "Escape".to_string(),
+            "up" | "arrowup" => "Up".to_string(),
+            "down" | "arrowdown" => "Down".to_string(),
+            "left" | "arrowleft" => "Left".to_string(),
+            "right" | "arrowright" => "Right".to_string(),
+            "home" => "Home".to_string(),
+            "end" => "End".to_string(),
+            "pageup" => "PageUp".to_string(),
+            "pagedown" => "PageDown".to_string(),
+            "space" => "Space".to_string(),
+            _ if trimmed.chars().count() == 1 => trimmed.to_uppercase(),
+            _ => return None,
+        };
+        Some(key)
+    }
+
+    fn compact_text_actions(actions: Vec<MacroAction>) -> Vec<MacroAction> {
+        let mut compacted = Vec::new();
+
+        for action in actions {
+            match action {
+                MacroAction::Text { value } => {
+                    if value.is_empty() {
+                        continue;
+                    }
+                    if let Some(MacroAction::Text { value: previous }) = compacted.last_mut() {
+                        previous.push_str(&value);
+                    } else {
+                        compacted.push(MacroAction::Text { value });
+                    }
+                }
+                other => compacted.push(other),
+            }
+        }
+
+        compacted
     }
 
     fn validate_input(
@@ -1104,7 +1479,10 @@ impl SnippetStore {
     fn validate_library(snippets: &[Snippet], categories: &[Category]) -> Result<(), String> {
         let mut seen_ids = HashSet::new();
         let mut seen_triggers = HashSet::new();
-        let category_ids: HashSet<&str> = categories.iter().map(|category| category.id.as_str()).collect();
+        let category_ids: HashSet<&str> = categories
+            .iter()
+            .map(|category| category.id.as_str())
+            .collect();
 
         for snippet in snippets {
             if !seen_ids.insert(snippet.id.as_str()) {
@@ -1158,7 +1536,9 @@ impl SnippetStore {
                 if current == category.id {
                     return Err("A árvore de categorias contém um ciclo".to_string());
                 }
-                cursor = by_id.get(current).and_then(|item| item.parent_id.as_deref());
+                cursor = by_id
+                    .get(current)
+                    .and_then(|item| item.parent_id.as_deref());
             }
         }
 
@@ -1281,8 +1661,10 @@ impl SnippetStore {
     }
 
     fn category_paths(categories: &[Category]) -> HashMap<String, (String, String)> {
-        let by_id: HashMap<&str, &Category> =
-            categories.iter().map(|category| (category.id.as_str(), category)).collect();
+        let by_id: HashMap<&str, &Category> = categories
+            .iter()
+            .map(|category| (category.id.as_str(), category))
+            .collect();
         let mut paths = HashMap::new();
         for category in categories {
             let mut names = vec![category.name.clone()];
@@ -1469,9 +1851,112 @@ mod tests {
     }
 
     #[test]
+    fn imports_textexpander_csv_and_tags_source() {
+        let csv = "Label,Abbreviation,Snippet\nAssinatura,/sig,\"Oi,\nEquipe\"";
+        let path = PathBuf::from("Clientes.csv");
+        let data = SnippetStore::read_textexpander_csv_content(csv, &path).unwrap();
+        assert_eq!(data.categories.len(), 1);
+        assert_eq!(data.categories[0].name, "Clientes");
+        assert_eq!(data.snippets.len(), 1);
+        assert_eq!(data.snippets[0].trigger, "/sig");
+        assert_eq!(data.snippets[0].name, "Assinatura");
+        assert_eq!(data.snippets[0].tags, vec!["textexpander"]);
+        assert_eq!(
+            data.snippets[0].actions,
+            vec![MacroAction::Text {
+                value: "Oi,\nEquipe".to_string()
+            }]
+        );
+    }
+
+    #[test]
+    fn imports_headerless_textexpander_csv_without_skipping_first_row() {
+        let csv = "\"1\",\"Bom dia\",\"Bom dia\"\n\"2\",\"Boa tarde\",\"Boa tarde\"";
+        let path = PathBuf::from("Atendimento-Inicial.csv");
+        let data = SnippetStore::read_textexpander_csv_content(csv, &path).unwrap();
+        assert_eq!(data.snippets.len(), 2);
+        assert_eq!(data.snippets[0].trigger, "1");
+        assert_eq!(data.snippets[0].name, "Bom dia");
+        assert_eq!(
+            data.snippets[0].actions,
+            vec![MacroAction::Text {
+                value: "Bom dia".to_string()
+            }]
+        );
+    }
+
+    #[test]
+    fn converts_textexpander_key_tokens_into_macro_actions() {
+        let actions = SnippetStore::parse_textexpander_actions(
+            "Bom dia!%key:enter%Como posso ajudar?%key:tab%",
+        );
+        assert_eq!(
+            actions,
+            vec![
+                MacroAction::Text {
+                    value: "Bom dia!".to_string()
+                },
+                MacroAction::Key {
+                    key: "Enter".to_string(),
+                    modifiers: None,
+                },
+                MacroAction::Text {
+                    value: "Como posso ajudar?".to_string()
+                },
+                MacroAction::Key {
+                    key: "Tab".to_string(),
+                    modifiers: None,
+                }
+            ]
+        );
+    }
+
+    #[test]
+    fn converts_textexpander_clipboard_and_cursor_tokens() {
+        let actions = SnippetStore::parse_textexpander_actions("Colar: %clipboard%|Fim");
+        assert_eq!(
+            actions,
+            vec![MacroAction::Text {
+                value: "Colar: {{clipboard}}{{cursor}}Fim".to_string()
+            }]
+        );
+    }
+
+    #[test]
+    fn merges_textexpander_csv_into_existing_library() {
+        let (store, path) = store();
+        store.add(input("/existente")).unwrap();
+        let csv_path = path.join("Equipe.csv");
+        fs::write(
+            &csv_path,
+            "Label,Abbreviation,Snippet\nEmail,/existente,Conteudo",
+        )
+        .unwrap();
+
+        let imported = store
+            .import_textexpander_csv_from_file(&csv_path, false)
+            .unwrap();
+
+        assert_eq!(imported, 1);
+        let snapshot = store.get_snapshot().unwrap();
+        assert_eq!(snapshot.snippets.len(), 2);
+        assert!(snapshot
+            .snippets
+            .iter()
+            .any(|snippet| snippet.trigger == "/existente-importado"));
+        assert!(snapshot
+            .categories
+            .iter()
+            .any(|category| category.name == "Equipe"));
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
     fn prevents_deleting_non_empty_category() {
         let (store, path) = store();
-        let category = store.create_category("Projetos".to_string(), None, None).unwrap();
+        let category = store
+            .create_category("Projetos".to_string(), None, None)
+            .unwrap();
         let mut snippet = input("/teste");
         snippet.category_id = Some(category.id.clone());
         store.add(snippet).unwrap();

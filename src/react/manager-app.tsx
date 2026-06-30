@@ -19,6 +19,7 @@ import { CSS } from '@dnd-kit/utilities';
 import {
   AlertTriangle,
   ArrowLeft,
+  ArrowUpDown,
   ChevronRight,
   ClipboardList,
   Copy,
@@ -30,6 +31,7 @@ import {
   FolderPlus,
   GripVertical,
   HelpCircle,
+  House,
   Keyboard,
   RefreshCw,
   RotateCcw,
@@ -79,6 +81,14 @@ import {
   DialogHeader,
   DialogTitle,
 } from '../components/ui/dialog';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuLabel,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+  DropdownMenuTrigger,
+} from '../components/ui/dropdown-menu';
 import { Input } from '../components/ui/input';
 import { ScrollArea } from '../components/ui/scroll-area';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
@@ -125,6 +135,9 @@ type IconState = {
 type ImportState = {
   open: boolean;
   path: string;
+  source: 'json' | 'textexpander';
+  title: string;
+  description: string;
 };
 
 const shortcutDefaults = {
@@ -529,11 +542,11 @@ export function ManagerApp() {
     const query = search.trim().toLowerCase();
     const list = query
       ? snippets.filter((snippet) =>
-          snippet.trigger.toLowerCase().includes(query) ||
-          snippet.name.toLowerCase().includes(query) ||
-          snippet.categoryPath.toLowerCase().includes(query) ||
-          snippet.tags.some((tag) => tag.toLowerCase().includes(query))
-        )
+        snippet.trigger.toLowerCase().includes(query) ||
+        snippet.name.toLowerCase().includes(query) ||
+        snippet.categoryPath.toLowerCase().includes(query) ||
+        snippet.tags.some((tag) => tag.toLowerCase().includes(query))
+      )
       : snippets.filter((snippet) => (snippet.categoryId || null) === (currentCategoryId || null));
 
     return [...list].sort((a, b) => {
@@ -966,16 +979,42 @@ export function ManagerApp() {
     try {
       const path = await coreInvoke<string | null>('choose_backup_import_path');
       if (!path) return;
-      setImportState({ open: true, path });
+      setImportState({
+        open: true,
+        path,
+        source: 'json',
+        title: 'Importar backup',
+        description: 'Escolha se deseja mesclar o backup com os snippets atuais ou substituir tudo.',
+      });
     } catch (error) {
       toast.error(`Erro ao escolher backup: ${String(error)}`);
+    }
+  }
+
+  async function importTextExpander() {
+    try {
+      const path = await coreInvoke<string | null>('choose_textexpander_import_path');
+      if (!path) return;
+      setImportState({
+        open: true,
+        path,
+        source: 'textexpander',
+        title: 'Importar do TextExpander',
+        description: 'Escolha se deseja mesclar o CSV exportado pelo TextExpander com os snippets atuais ou substituir tudo.',
+      });
+    } catch (error) {
+      toast.error(`Erro ao escolher CSV do TextExpander: ${String(error)}`);
     }
   }
 
   async function finishImport(replace: boolean) {
     if (!importState) return;
     try {
-      const count = await coreInvoke<number>('import_backup_from_file', { path: importState.path, replace });
+      const command =
+        importState.source === 'textexpander'
+          ? 'import_textexpander_csv_from_file'
+          : 'import_backup_from_file';
+      const count = await coreInvoke<number>(command, { path: importState.path, replace });
       toast.success(`${count} snippet(s) importado(s).`);
       setImportState(null);
       setPanel('empty');
@@ -985,6 +1024,21 @@ export function ManagerApp() {
     } catch (error) {
       toast.error(`Erro ao importar: ${String(error)}`);
     }
+  }
+
+  function confirmReplaceImport() {
+    if (!importState) return;
+    const sourceLabel = importState.source === 'textexpander' ? 'o CSV do TextExpander' : 'o backup JSON';
+    setConfirmState({
+      open: true,
+      title: 'Apagar snippets atuais?',
+      description: `Essa ação vai apagar toda a biblioteca atual de snippets e categorias antes de importar ${sourceLabel}. Essa operação substitui tudo.`,
+      confirmLabel: 'Apagar biblioteca e importar',
+      destructive: true,
+      onConfirm: async () => {
+        await finishImport(true);
+      },
+    });
   }
 
   async function saveShortcut(shortcut: string, display: string) {
@@ -1108,42 +1162,43 @@ export function ManagerApp() {
               <div className="text-xl font-black tracking-tight text-amber-400">guepardosys-snip</div>
             </div>
           </div>
-          <div className="relative mt-4">
-            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-500" />
-            <Input className="pl-10" placeholder="Buscar snippets..." value={search} onChange={(e) => setSearch(e.target.value)} />
-          </div>
-          <div className="mt-3">
-            <Select value={sortOrder} onValueChange={(value) => setSortOrder(value as SortOrder)}>
-              <SelectTrigger>
-                <SelectValue placeholder="Ordenar snippets" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="recent">Mais recentes</SelectItem>
-                <SelectItem value="used">Mais usados</SelectItem>
-                <SelectItem value="name">Nome</SelectItem>
-              </SelectContent>
-            </Select>
+          <div className="mt-4 flex items-center gap-2">
+            <div className="relative min-w-0 flex-1">
+              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-500" />
+              <Input className="pl-10" placeholder="Buscar snippets..." value={search} onChange={(e) => setSearch(e.target.value)} />
+            </div>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="outline" size="icon" aria-label="Ordenar snippets">
+                  <ArrowUpDown className="h-4 w-4 text-zinc-400" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-44">
+                <DropdownMenuLabel>Ordenar snippets</DropdownMenuLabel>
+                <DropdownMenuRadioGroup value={sortOrder} onValueChange={(value) => setSortOrder(value as SortOrder)}>
+                  <DropdownMenuRadioItem value="recent">Mais recentes</DropdownMenuRadioItem>
+                  <DropdownMenuRadioItem value="used">Mais usados</DropdownMenuRadioItem>
+                  <DropdownMenuRadioItem value="name">Nome</DropdownMenuRadioItem>
+                </DropdownMenuRadioGroup>
+              </DropdownMenuContent>
+            </DropdownMenu>
           </div>
         </div>
 
         <div className="flex items-center gap-3 border-b border-zinc-900 px-4 py-3">
-          {currentCategoryId ? (
-            <Button variant="secondary" size="sm" onClick={() => setCurrentCategoryId(currentCategory?.parentId ?? null)}>
-              <ArrowLeft className="h-4 w-4" />
-              Voltar
-            </Button>
-          ) : null}
+          <Button
+            variant="secondary"
+            size="icon-sm"
+            aria-label={currentCategoryId ? 'Voltar para pasta anterior' : 'Pasta raiz'}
+            disabled={!currentCategoryId}
+            onClick={() => setCurrentCategoryId(currentCategory?.parentId ?? null)}
+          >
+              {currentCategoryId ? <ArrowLeft className="h-4 w-4" /> : <House className="h-4 w-4" />}
+          </Button>
           <div className="min-w-0 flex-1">
             <div className="text-[10px] font-semibold uppercase tracking-[0.24em] text-zinc-500">Pasta atual</div>
             <div className="truncate text-sm font-semibold">{getCategoryPath(currentCategoryId) || 'Raiz'}</div>
           </div>
-          <Button
-            variant="secondary"
-            size="sm"
-            onClick={() => void setSortMode((currentCategory?.sortMode ?? 'manual') === 'manual' ? 'alphabetical' : 'manual')}
-          >
-            {(currentCategory?.sortMode ?? 'manual') === 'manual' ? 'Manual' : 'A-Z'}
-          </Button>
         </div>
 
         <ScrollArea className="flex-1">
@@ -1407,6 +1462,10 @@ export function ManagerApp() {
                       <Upload className="h-4 w-4" />
                       Importar JSON
                     </Button>
+                    <Button variant="secondary" onClick={() => void importTextExpander()}>
+                      <Upload className="h-4 w-4" />
+                      Importar TextExpander CSV
+                    </Button>
                   </div>
                 </SettingsCard>
 
@@ -1607,16 +1666,19 @@ export function ManagerApp() {
       <ConfirmDialog state={confirmState} onClose={() => setConfirmState(null)} />
 
       <Dialog open={Boolean(importState?.open)} onOpenChange={(open) => !open && setImportState(null)}>
-        <DialogContent className="w-[min(92vw,540px)]">
+        <DialogContent className="w-[min(96vw,480px)] max-w-[min(96vw,480px)] sm:max-w-[480px]">
           <DialogHeader>
-            <DialogTitle>Importar backup</DialogTitle>
-            <DialogDescription>Escolha se deseja mesclar o backup com os snippets atuais ou substituir tudo.</DialogDescription>
+            <DialogTitle>{importState?.title ?? 'Importar snippets'}</DialogTitle>
+            <DialogDescription>{importState?.description ?? 'Escolha como deseja importar os snippets.'}</DialogDescription>
           </DialogHeader>
-          <DialogFooter>
-            <Button variant="secondary" onClick={() => setImportState(null)}>Cancelar</Button>
-            <Button variant="secondary" onClick={() => void finishImport(false)}>Mesclar</Button>
-            <Button variant="destructive" onClick={() => void finishImport(true)}>Substituir tudo</Button>
-          </DialogFooter>
+          <div className="px-1 text-sm text-zinc-400">
+            Mesclar preserva os snippets atuais. Substituir apaga toda a biblioteca atual antes da importação.
+          </div>
+          <div className="-mx-4 -mb-4 mt-2 flex flex-nowrap items-center justify-end gap-2 overflow-x-auto rounded-b-xl border-t bg-muted/50 p-4">
+            <Button className="shrink-0 whitespace-nowrap" variant="secondary" onClick={() => setImportState(null)}>Cancelar</Button>
+            <Button className="shrink-0 whitespace-nowrap" variant="secondary" onClick={() => void finishImport(false)}>Mesclar</Button>
+            <Button className="shrink-0 whitespace-nowrap" variant="destructive" onClick={confirmReplaceImport}>Apagar biblioteca atual e importar</Button>
+          </div>
         </DialogContent>
       </Dialog>
     </div>
@@ -1664,17 +1726,26 @@ function SidebarCategoryCard({
   const Icon = category.icon.kind === 'emoji' ? null : getLucideIcon(category.icon.value);
   return (
     <div
+      role="button"
+      tabIndex={0}
       className={cn(
-        'rounded-2xl border bg-zinc-950/80 transition-colors',
+        'group rounded-2xl border bg-zinc-950/80 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500/60',
         isSnippetDropTarget
           ? 'border-amber-500/70 bg-amber-500/10'
           : 'border-zinc-900 hover:border-zinc-700 hover:bg-zinc-900'
       )}
+      onClick={onOpen}
+      onKeyDown={(event) => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault();
+          onOpen();
+        }
+      }}
       onDragOver={
         canAcceptSnippetDrop
           ? (event) => {
-              event.preventDefault();
-            }
+            event.preventDefault();
+          }
           : undefined
       }
       onDragEnter={canAcceptSnippetDrop ? onSnippetDragEnter : undefined}
@@ -1682,9 +1753,9 @@ function SidebarCategoryCard({
       onDrop={
         canAcceptSnippetDrop
           ? (event) => {
-              event.preventDefault();
-              onSnippetDrop?.();
-            }
+            event.preventDefault();
+            onSnippetDrop?.();
+          }
           : undefined
       }
     >
@@ -1692,23 +1763,24 @@ function SidebarCategoryCard({
         <span className="grid h-9 w-9 place-items-center rounded-xl bg-zinc-900 text-amber-400">
           {category.icon.kind === 'emoji' ? <span className="text-lg">{category.icon.value}</span> : <Icon className="h-4 w-4" />}
         </span>
-        <button type="button" onClick={onOpen} className="min-w-0 flex-1 text-left">
+        <div className="min-w-0 flex-1">
           <div className="truncate text-sm font-semibold">{category.name}</div>
-        </button>
+        </div>
         {dragHandleProps ? (
           <button
             type="button"
             aria-label={`Reordenar ${category.name}`}
             className="drag-handle rounded-xl border border-zinc-800 bg-zinc-900 p-2 text-zinc-400 transition-colors hover:border-zinc-700 hover:text-zinc-200"
             onClick={(event) => event.stopPropagation()}
+            onKeyDown={(event) => event.stopPropagation()}
             {...dragHandleProps}
           >
             <GripVertical className="h-4 w-4" />
           </button>
         ) : null}
-        <button type="button" onClick={onOpen} className="rounded-lg p-1 text-zinc-500 transition-colors hover:text-zinc-200">
+        <span className="rounded-lg p-1 text-zinc-500 transition-colors group-hover:text-zinc-200">
           <ChevronRight className="h-4 w-4" />
-        </button>
+        </span>
       </div>
     </div>
   );
