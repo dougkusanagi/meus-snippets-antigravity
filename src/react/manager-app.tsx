@@ -19,6 +19,7 @@ import { CSS } from '@dnd-kit/utilities';
 import {
   AlertTriangle,
   ArrowLeft,
+  ArrowUpDown,
   ChevronRight,
   ClipboardList,
   Copy,
@@ -30,6 +31,7 @@ import {
   FolderPlus,
   GripVertical,
   HelpCircle,
+  House,
   Keyboard,
   RefreshCw,
   RotateCcw,
@@ -79,6 +81,14 @@ import {
   DialogHeader,
   DialogTitle,
 } from '../components/ui/dialog';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuLabel,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+  DropdownMenuTrigger,
+} from '../components/ui/dropdown-menu';
 import { Input } from '../components/ui/input';
 import { ScrollArea } from '../components/ui/scroll-area';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
@@ -1152,42 +1162,43 @@ export function ManagerApp() {
               <div className="text-xl font-black tracking-tight text-amber-400">guepardosys-snip</div>
             </div>
           </div>
-          <div className="relative mt-4">
-            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-500" />
-            <Input className="pl-10" placeholder="Buscar snippets..." value={search} onChange={(e) => setSearch(e.target.value)} />
-          </div>
-          <div className="mt-3">
-            <Select value={sortOrder} onValueChange={(value) => setSortOrder(value as SortOrder)}>
-              <SelectTrigger>
-                <SelectValue placeholder="Ordenar snippets" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="recent">Mais recentes</SelectItem>
-                <SelectItem value="used">Mais usados</SelectItem>
-                <SelectItem value="name">Nome</SelectItem>
-              </SelectContent>
-            </Select>
+          <div className="mt-4 flex items-center gap-2">
+            <div className="relative min-w-0 flex-1">
+              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-500" />
+              <Input className="pl-10" placeholder="Buscar snippets..." value={search} onChange={(e) => setSearch(e.target.value)} />
+            </div>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="outline" size="icon" aria-label="Ordenar snippets">
+                  <ArrowUpDown className="h-4 w-4 text-zinc-400" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-44">
+                <DropdownMenuLabel>Ordenar snippets</DropdownMenuLabel>
+                <DropdownMenuRadioGroup value={sortOrder} onValueChange={(value) => setSortOrder(value as SortOrder)}>
+                  <DropdownMenuRadioItem value="recent">Mais recentes</DropdownMenuRadioItem>
+                  <DropdownMenuRadioItem value="used">Mais usados</DropdownMenuRadioItem>
+                  <DropdownMenuRadioItem value="name">Nome</DropdownMenuRadioItem>
+                </DropdownMenuRadioGroup>
+              </DropdownMenuContent>
+            </DropdownMenu>
           </div>
         </div>
 
         <div className="flex items-center gap-3 border-b border-zinc-900 px-4 py-3">
-          {currentCategoryId ? (
-            <Button variant="secondary" size="sm" onClick={() => setCurrentCategoryId(currentCategory?.parentId ?? null)}>
-              <ArrowLeft className="h-4 w-4" />
-              Voltar
-            </Button>
-          ) : null}
+          <Button
+            variant="secondary"
+            size="icon-sm"
+            aria-label={currentCategoryId ? 'Voltar para pasta anterior' : 'Pasta raiz'}
+            disabled={!currentCategoryId}
+            onClick={() => setCurrentCategoryId(currentCategory?.parentId ?? null)}
+          >
+              {currentCategoryId ? <ArrowLeft className="h-4 w-4" /> : <House className="h-4 w-4" />}
+          </Button>
           <div className="min-w-0 flex-1">
             <div className="text-[10px] font-semibold uppercase tracking-[0.24em] text-zinc-500">Pasta atual</div>
             <div className="truncate text-sm font-semibold">{getCategoryPath(currentCategoryId) || 'Raiz'}</div>
           </div>
-          <Button
-            variant="secondary"
-            size="sm"
-            onClick={() => void setSortMode((currentCategory?.sortMode ?? 'manual') === 'manual' ? 'alphabetical' : 'manual')}
-          >
-            {(currentCategory?.sortMode ?? 'manual') === 'manual' ? 'Manual' : 'A-Z'}
-          </Button>
         </div>
 
         <ScrollArea className="flex-1">
@@ -1715,12 +1726,21 @@ function SidebarCategoryCard({
   const Icon = category.icon.kind === 'emoji' ? null : getLucideIcon(category.icon.value);
   return (
     <div
+      role="button"
+      tabIndex={0}
       className={cn(
-        'rounded-2xl border bg-zinc-950/80 transition-colors',
+        'group rounded-2xl border bg-zinc-950/80 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500/60',
         isSnippetDropTarget
           ? 'border-amber-500/70 bg-amber-500/10'
           : 'border-zinc-900 hover:border-zinc-700 hover:bg-zinc-900'
       )}
+      onClick={onOpen}
+      onKeyDown={(event) => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault();
+          onOpen();
+        }
+      }}
       onDragOver={
         canAcceptSnippetDrop
           ? (event) => {
@@ -1743,23 +1763,24 @@ function SidebarCategoryCard({
         <span className="grid h-9 w-9 place-items-center rounded-xl bg-zinc-900 text-amber-400">
           {category.icon.kind === 'emoji' ? <span className="text-lg">{category.icon.value}</span> : <Icon className="h-4 w-4" />}
         </span>
-        <button type="button" onClick={onOpen} className="min-w-0 flex-1 text-left">
+        <div className="min-w-0 flex-1">
           <div className="truncate text-sm font-semibold">{category.name}</div>
-        </button>
+        </div>
         {dragHandleProps ? (
           <button
             type="button"
             aria-label={`Reordenar ${category.name}`}
             className="drag-handle rounded-xl border border-zinc-800 bg-zinc-900 p-2 text-zinc-400 transition-colors hover:border-zinc-700 hover:text-zinc-200"
             onClick={(event) => event.stopPropagation()}
+            onKeyDown={(event) => event.stopPropagation()}
             {...dragHandleProps}
           >
             <GripVertical className="h-4 w-4" />
           </button>
         ) : null}
-        <button type="button" onClick={onOpen} className="rounded-lg p-1 text-zinc-500 transition-colors hover:text-zinc-200">
+        <span className="rounded-lg p-1 text-zinc-500 transition-colors group-hover:text-zinc-200">
           <ChevronRight className="h-4 w-4" />
-        </button>
+        </span>
       </div>
     </div>
   );

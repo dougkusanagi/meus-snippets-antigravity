@@ -15,11 +15,15 @@ Este projeto segue SemVer e mantem um changelog unico em ordem da release mais r
 - Padronizacao do fluxo de release para exigir alinhamento de versao entre `package.json`, `src-tauri/Cargo.toml` e `src-tauri/tauri.conf.json`.
 - Clarificacao dos criterios para uso de `Added`, `Changed` e `Fixed` no changelog.
 - Fluxo de importacao ajustado para deixar explicito quando a operacao vai apagar a biblioteca atual antes de substituir os snippets.
+- Controle de ordenacao dos snippets movido para um menu dropdown de icone ao lado da busca, liberando espaco na barra lateral e mantendo as opcoes visiveis apenas ao abrir o menu.
+- Barra de `Pasta atual` estabilizada com botao de voltar fixo em formato de icone, evitando que o titulo deslize ao entrar ou sair da raiz.
+- Navegacao lateral refinada com icone de raiz mais claro na pasta inicial e cards de categoria totalmente clicaveis na sidebar.
 
 ### Fixed
 
 - Removida a ambiguidade sobre quando registrar novidades, correcoes e ajustes de versao no historico do projeto.
 - Importacao de CSVs do TextExpander sem cabecalho na primeira linha e conversao de tokens como `%key:enter%` para a estrutura interna de macros do app.
+- Removido o botao `Manual` da area de pasta atual, que passava a impressao de acao sem efeito ao navegar pela lista.
 
 ## [v0.0.1] - 2026-06-12
 
