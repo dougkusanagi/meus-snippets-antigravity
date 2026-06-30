@@ -8,16 +8,28 @@ Este projeto segue SemVer e mantem um changelog unico em ordem da release mais r
 
 - Workflow dedicado de release no GitHub Actions para gerar e anexar os binarios Windows diretamente nas tags `v*`.
 - Expansao automatica inline no Windows para snippets cujo gatilho comeca com `/`, substituindo o texto enquanto o usuario digita fora do proprio app.
+- Novo formulario completo para criar e editar categorias com nome, icone e pasta pai no mesmo fluxo.
+- Novo picker leve de categorias para escolher rapidamente a pasta de um snippet sem expor acoes administrativas.
 
 ### Changed
 
 - Pipeline de CI reorganizada para manter Windows ativo e preservar os jobs de Linux e macOS no repositório, mas desativados de forma compativel com o GitHub Actions.
 - Roadmap e documentacao atualizados para refletir que a primeira etapa da expansao automatica agora existe no Windows, mantendo picker como fallback para snippets com variaveis preenchiveis.
+- Manager reorganizado com sidebar focada em exploracao de pastas, lista de snippets no painel principal e editor separado para escalar melhor com bibliotecas maiores.
+- Contrato do campo de gatilho padronizado para persistir apenas o identificador sem `/`, mantendo a expansao por `/gatilho` apenas como formato de uso e exibicao.
+- Busca e listagens do manager e do picker passaram a apresentar os gatilhos com prefixo visual `/` sem alterar o valor salvo.
+- Gerenciamento de categorias refeito do zero com modal split-view, arvore rolavel e painel lateral de edicao, substituindo a navegacao quebrada por niveis.
+- Selecao de categoria no editor de snippet agora usa um campo clicavel e remove o botao textual `Escolher pela arvore`.
 
 ### Fixed
 
+- Gatilhos iniciados por `/` no Windows agora reiniciam o rastreamento no momento da digitacao, em vez de depender de um estado interno de “inicio de palavra” que ficava incorreto apos selecoes, delecoes ou reposicionamento do cursor.
+- Listener global do Windows agora volta a aceitar um novo gatilho digitado logo apos limpar o estado interno ao sair do manager, encerrar uma expansao ou interromper uma captura, evitando casos em que sequencias como `/1` deixavam de expandir.
+- Limpeza de campos com atalhos de edicao como `Ctrl+A` seguido de `Delete` nao deixa mais o rastreador de gatilhos preso em um contexto invalido no Windows, permitindo novas expansoes imediatamente apos apagar todo o texto.
 - Publicacao de releases ajustada para evitar tags sem assets `.msi` e `.exe` no GitHub Releases.
 - Verificacao de atualizacao agora explica corretamente quando a API publica do GitHub nao consegue acessar releases de um repositorio privado, em vez de exibir apenas uma falha generica.
+- Expansao inline no Windows deixou de falhar para snippets legados ou importados com gatilhos salvos com `/`, normalizando criacao, edicao, importacao e busca no store.
+- Modais de categorias agora respeitam a viewport, com scroll interno e sem vazamento horizontal ou vertical da lista de categorias.
 
 ## [v0.1.0] - 2026-06-30
 

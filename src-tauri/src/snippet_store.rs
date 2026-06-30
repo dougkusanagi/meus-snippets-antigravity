@@ -311,12 +311,13 @@ impl SnippetStore {
     }
 
     pub fn get_by_trigger(&self, trigger: &str) -> Result<Option<Snippet>, String> {
+        let normalized_trigger = Self::normalize_trigger_value(trigger)?;
         Ok(self
             .snippets
             .lock()
             .map_err(|_| "Falha ao bloquear armazenamento".to_string())?
             .iter()
-            .find(|snippet| snippet.trigger.eq_ignore_ascii_case(trigger))
+            .find(|snippet| snippet.trigger.eq_ignore_ascii_case(&normalized_trigger))
             .cloned())
     }
 
@@ -1358,7 +1359,7 @@ impl SnippetStore {
     }
 
     fn normalize_and_validate(mut input: SnippetInput) -> Result<SnippetInput, String> {
-        input.trigger = input.trigger.trim().to_string();
+        input.trigger = Self::normalize_trigger_value(&input.trigger)?;
         input.name = input.name.trim().to_string();
         input.tags = input
             .tags
@@ -1369,9 +1370,6 @@ impl SnippetStore {
         input.tags.sort_by_key(|tag| tag.to_lowercase());
         input.tags.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
 
-        if input.trigger.is_empty() {
-            return Err("O gatilho é obrigatório".to_string());
-        }
         if input.trigger.chars().count() > MAX_TRIGGER_LEN {
             return Err(format!(
                 "O gatilho deve ter até {MAX_TRIGGER_LEN} caracteres"
@@ -1414,6 +1412,14 @@ impl SnippetStore {
             }
         }
         Ok(input)
+    }
+
+    fn normalize_trigger_value(trigger: &str) -> Result<String, String> {
+        let normalized = trigger.trim().trim_start_matches('/').to_string();
+        if normalized.is_empty() {
+            return Err("O gatilho é obrigatório".to_string());
+        }
+        Ok(normalized)
     }
 
     fn normalize_snippet(mut snippet: Snippet) -> Result<Snippet, String> {
@@ -1810,6 +1816,24 @@ mod tests {
     }
 
     #[test]
+    fn normalizes_triggers_without_leading_slash() {
+        let (store, path) = store();
+        let snippet = store.add(input("/email")).unwrap();
+        assert_eq!(snippet.trigger, "email");
+        assert!(store.get_by_trigger("/email").unwrap().is_some());
+        assert!(store.get_by_trigger("email").unwrap().is_some());
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn rejects_duplicate_triggers_after_normalization() {
+        let (store, path) = store();
+        store.add(input("email")).unwrap();
+        assert!(store.add(input("/email")).is_err());
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
     fn persists_versioned_data_and_normalizes_tags() {
         let (store, path) = store();
         let snippet = store.add(input("/teste")).unwrap();
@@ -1868,7 +1892,7 @@ mod tests {
         assert_eq!(data.categories.len(), 1);
         assert_eq!(data.categories[0].name, "Clientes");
         assert_eq!(data.snippets.len(), 1);
-        assert_eq!(data.snippets[0].trigger, "/sig");
+        assert_eq!(data.snippets[0].trigger, "sig");
         assert_eq!(data.snippets[0].name, "Assinatura");
         assert_eq!(data.snippets[0].tags, vec!["textexpander"]);
         assert_eq!(
@@ -1953,7 +1977,7 @@ mod tests {
         assert!(snapshot
             .snippets
             .iter()
-            .any(|snippet| snippet.trigger == "/existente-importado"));
+            .any(|snippet| snippet.trigger == "existente-importado"));
         assert!(snapshot
             .categories
             .iter()

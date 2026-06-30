@@ -31,6 +31,14 @@
     return window.__TAURI__.event.listen(event, callback);
   }
 
+  function formatTrigger(trigger) {
+    return `/${String(trigger || '').replace(/^\/+/, '')}`;
+  }
+
+  function normalizeTrigger(trigger) {
+    return String(trigger || '').trim().replace(/^\/+/, '');
+  }
+
   // ---- Load snippets ----
   async function loadSnippets() {
     try {
@@ -45,10 +53,12 @@
   // ---- Filter & render ----
   function filterAndRender() {
     const query = (search.value || '').toLowerCase().trim();
+    const normalizedQuery = normalizeTrigger(query).toLowerCase();
 
     if (query) {
       filtered = snippets.filter(s =>
         s.trigger.toLowerCase().startsWith(query) ||
+        s.trigger.toLowerCase().startsWith(normalizedQuery) ||
         s.name.toLowerCase().includes(query) ||
         (s.categoryPath || '').toLowerCase().includes(query) ||
         (s.categoryName || '').toLowerCase().includes(query) ||
@@ -87,7 +97,7 @@
             <span class="item-name">${escapeHtml(s.name)}</span>
           </div>
           <div class="item-right">
-            <span class="item-trigger-badge">${escapeHtml(s.trigger)}</span>
+            <span class="item-trigger-badge">${escapeHtml(formatTrigger(s.trigger))}</span>
             ${shortcutHint}
           </div>
         </div>

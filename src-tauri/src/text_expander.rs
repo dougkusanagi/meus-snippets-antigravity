@@ -12,8 +12,9 @@ mod windows_impl {
     use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
     use windows::Win32::System::Threading::GetCurrentProcessId;
     use windows::Win32::UI::Input::KeyboardAndMouse::{
-        GetKeyboardLayout, GetKeyboardState, ToUnicodeEx, VK_BACK, VK_ESCAPE, VK_RETURN, VK_SPACE,
-        VK_TAB,
+        GetKeyboardLayout, GetKeyboardState, MapVirtualKeyW, ToUnicodeEx, MAPVK_VK_TO_CHAR,
+        VK_BACK, VK_DELETE, VK_DIVIDE, VK_DOWN, VK_END, VK_ESCAPE, VK_HOME, VK_LEFT, VK_NEXT,
+        VK_PRIOR, VK_RETURN, VK_RIGHT, VK_SPACE, VK_TAB, VK_UP,
     };
     use windows::Win32::UI::WindowsAndMessaging::{
         CallNextHookEx, DispatchMessageW, GetForegroundWindow, GetMessageW,
@@ -28,55 +29,47 @@ mod windows_impl {
 
     struct ListenerState {
         buffer: String,
-        token_start_allowed: bool,
     }
 
     impl ListenerState {
         fn new() -> Self {
             Self {
                 buffer: String::new(),
-                token_start_allowed: true,
             }
         }
 
-        fn clear(&mut self) {
+        fn clear_buffer(&mut self) {
             self.buffer.clear();
+        }
+
+        fn reset(&mut self) {
+            self.clear_buffer();
         }
 
         fn push_char(&mut self, ch: char) -> Option<String> {
             if ch.is_control() {
-                self.clear();
-                self.token_start_allowed = true;
+                self.reset();
                 return None;
             }
 
             if ch.is_whitespace() {
-                self.clear();
-                self.token_start_allowed = true;
+                self.reset();
                 return None;
             }
 
             if ch == TRIGGER_PREFIX {
-                if !self.token_start_allowed {
-                    self.clear();
-                    self.token_start_allowed = false;
-                    return None;
-                }
                 self.buffer.clear();
                 self.buffer.push(ch);
-                self.token_start_allowed = false;
                 return Some(self.buffer.clone());
             }
 
             if self.buffer.is_empty() {
-                self.token_start_allowed = false;
                 return None;
             }
 
             self.buffer.push(ch);
-            self.token_start_allowed = false;
             if self.buffer.chars().count() > MAX_BUFFER_CHARS {
-                self.clear();
+                self.clear_buffer();
                 return None;
             }
 
@@ -95,6 +88,12 @@ mod windows_impl {
     }
 
     static RUNTIME: OnceLock<HookRuntime> = OnceLock::new();
+
+    fn reset_listener(runtime: &HookRuntime) {
+        if let Ok(mut state) = runtime.state.lock() {
+            state.reset();
+        }
+    }
 
     pub fn start(app: tauri::AppHandle) {
         if RUNTIME
@@ -148,9 +147,7 @@ mod windows_impl {
             || is_shortcut_recording_active()
             || is_own_window_focused()
         {
-            if let Ok(mut state) = runtime.state.lock() {
-                state.clear();
-            }
+            reset_listener(runtime);
             return;
         }
 
@@ -169,14 +166,22 @@ mod windows_impl {
                 || value == VK_TAB.0 as u32
                 || value == VK_RETURN.0 as u32
                 || value == VK_ESCAPE.0 as u32
+                || value == VK_DELETE.0 as u32
+                || value == VK_LEFT.0 as u32
+                || value == VK_RIGHT.0 as u32
+                || value == VK_UP.0 as u32
+                || value == VK_DOWN.0 as u32
+                || value == VK_HOME.0 as u32
+                || value == VK_END.0 as u32
+                || value == VK_PRIOR.0 as u32
+                || value == VK_NEXT.0 as u32
         ) {
-            if let Ok(mut state) = runtime.state.lock() {
-                state.clear();
-            }
+            reset_listener(runtime);
             return;
         }
 
         let Some(ch) = translate_key_to_char(vk, key_info.scanCode) else {
+            reset_listener(runtime);
             return;
         };
 
@@ -217,9 +222,7 @@ mod windows_impl {
             return;
         }
 
-        if let Ok(mut state) = runtime.state.lock() {
-            state.clear();
-        }
+        reset_listener(runtime);
 
         let app = runtime.app.clone();
         thread::spawn(move || {
@@ -295,16 +298,22 @@ mod windows_impl {
                 return None;
             }
         }
+        if let Some(state) = keyboard_state.get_mut(vk_code as usize) {
+            *state |= 0x80;
+        }
 
-        let mut utf16 = [0u16; 4];
-        let translated = unsafe {
-            let foreground_window = GetForegroundWindow();
-            let layout = if foreground_window.0.is_null() {
+        let foreground_window = unsafe { GetForegroundWindow() };
+        let layout = unsafe {
+            if foreground_window.0.is_null() {
                 GetKeyboardLayout(0)
             } else {
                 let thread_id = GetWindowThreadProcessId(foreground_window, None);
                 GetKeyboardLayout(thread_id)
-            };
+            }
+        };
+
+        let mut utf16 = [0u16; 4];
+        let translated = unsafe {
             ToUnicodeEx(
                 vk_code,
                 scan_code,
@@ -315,11 +324,41 @@ mod windows_impl {
             )
         };
 
-        if translated <= 0 {
+        if translated < 0 {
+            let mut dead_key_sink = [0u16; 4];
+            let _ = unsafe {
+                ToUnicodeEx(
+                    vk_code,
+                    scan_code,
+                    &keyboard_state,
+                    &mut dead_key_sink,
+                    TO_UNICODE_NO_STATE_CHANGE,
+                    layout,
+                )
+            };
             return None;
         }
 
-        char::from_u32(utf16[0] as u32)
+        if translated > 0 {
+            return char::from_u32(utf16[0] as u32);
+        }
+
+        if vk_code == VK_DIVIDE.0 as u32 {
+            return Some('/');
+        }
+
+        let fallback = unsafe { MapVirtualKeyW(vk_code, MAPVK_VK_TO_CHAR) };
+        if fallback == 0 {
+            return None;
+        }
+
+        let fallback_char = (fallback & 0x7fff) as u32;
+        let ch = char::from_u32(fallback_char)?;
+        if ch.is_control() {
+            return None;
+        }
+
+        Some(ch)
     }
 
     #[cfg(test)]
@@ -330,7 +369,7 @@ mod windows_impl {
         fn starts_tracking_only_after_prefix() {
             let mut state = ListenerState::new();
             assert_eq!(state.push_char('a'), None);
-            assert_eq!(state.push_char('/'), None);
+            assert_eq!(state.push_char('/'), Some("/".to_string()));
             state.push_char(' ');
             assert_eq!(state.push_char('/'), Some("/".to_string()));
             assert_eq!(state.push_char('e'), Some("/e".to_string()));
@@ -356,12 +395,18 @@ mod windows_impl {
         }
 
         #[test]
-        fn ignores_prefix_inside_existing_token() {
+        fn restarts_tracking_on_prefix_inside_existing_token() {
             let mut state = ListenerState::new();
             assert_eq!(state.push_char('x'), None);
-            assert_eq!(state.push_char('/'), None);
-            assert_eq!(state.push_char('1'), None);
-            state.push_char(' ');
+            assert_eq!(state.push_char('/'), Some("/".to_string()));
+            assert_eq!(state.push_char('1'), Some("/1".to_string()));
+        }
+
+        #[test]
+        fn reset_allows_new_prefix_after_external_clear() {
+            let mut state = ListenerState::new();
+            assert_eq!(state.push_char('x'), None);
+            state.reset();
             assert_eq!(state.push_char('/'), Some("/".to_string()));
             assert_eq!(state.push_char('1'), Some("/1".to_string()));
         }

@@ -22,6 +22,7 @@ import {
   AlertTriangle,
   ArrowLeft,
   ArrowUpDown,
+  ChevronDown,
   ChevronRight,
   ClipboardList,
   Copy,
@@ -110,13 +111,17 @@ type SnippetDraft = {
   actions: MacroAction[];
 };
 
-type PromptState = {
-  open: boolean;
-  title: string;
-  description?: string;
-  label: string;
-  defaultValue: string;
-  onSubmit: (value: string) => Promise<void> | void;
+type CategoryDraftState = {
+  mode: 'create-root' | 'create-child' | 'edit';
+  id?: string;
+  name: string;
+  parentId: string | null;
+  icon: CategoryIcon;
+};
+
+type CategoryTreeNode = {
+  category: Category;
+  children: CategoryTreeNode[];
 };
 
 type ConfirmState = {
@@ -393,13 +398,96 @@ function emptyDraft(): SnippetDraft {
 function toDraft(snippet: Snippet): SnippetDraft {
   return {
     id: snippet.id,
-    trigger: snippet.trigger,
+    trigger: normalizeSnippetTriggerInput(snippet.trigger),
     name: snippet.name,
     categoryId: snippet.categoryId,
     tags: snippet.tags.join(', '),
     favorite: snippet.favorite,
     actions: snippet.actions.length ? snippet.actions : [{ type: 'text', value: '' }],
   };
+}
+
+function normalizeSnippetTriggerInput(value: string) {
+  return value.trim().replace(/^\/+/, '');
+}
+
+function formatSnippetTrigger(trigger: string) {
+  const normalized = normalizeSnippetTriggerInput(trigger);
+  return normalized ? `/${normalized}` : '/';
+}
+
+function buildCategoryTree(categories: Category[]) {
+  const byParent = new Map<string | null, Category[]>();
+  const byId = new Map(categories.map((category) => [category.id, category]));
+  for (const category of categories) {
+    const parentId = category.parentId ?? null;
+    const siblings = byParent.get(parentId) ?? [];
+    siblings.push(category);
+    byParent.set(parentId, siblings);
+  }
+
+  const sortCategories = (items: Category[], parentId: string | null) =>
+    [...items].sort((a, b) => {
+      const sortMode =
+        parentId === null
+          ? items[0]?.sortMode ?? 'manual'
+          : byId.get(parentId)?.sortMode ?? 'manual';
+      if (sortMode === 'alphabetical') {
+        return a.name.localeCompare(b.name, 'pt-BR');
+      }
+      if (a.sortIndex !== b.sortIndex) return a.sortIndex - b.sortIndex;
+      return a.name.localeCompare(b.name, 'pt-BR');
+    });
+
+  const buildNodes = (parentId: string | null): CategoryTreeNode[] =>
+    sortCategories(byParent.get(parentId) ?? [], parentId).map((category) => ({
+      category,
+      children: buildNodes(category.id),
+    }));
+
+  return buildNodes(null);
+}
+
+function getAncestorIds(categoryId: string | null, categories: Category[]) {
+  if (!categoryId) return [] as string[];
+  const byId = new Map(categories.map((category) => [category.id, category]));
+  const ids: string[] = [];
+  let cursor = byId.get(categoryId) ?? null;
+
+  while (cursor?.parentId) {
+    ids.unshift(cursor.parentId);
+    cursor = byId.get(cursor.parentId) ?? null;
+  }
+
+  return ids;
+}
+
+function getDescendantIds(categoryId: string, categories: Category[]) {
+  const byParent = new Map<string | null, string[]>();
+  for (const category of categories) {
+    const parentId = category.parentId ?? null;
+    const children = byParent.get(parentId) ?? [];
+    children.push(category.id);
+    byParent.set(parentId, children);
+  }
+
+  const descendants: string[] = [];
+  const stack = [...(byParent.get(categoryId) ?? [])];
+  while (stack.length) {
+    const current = stack.pop()!;
+    descendants.push(current);
+    stack.push(...(byParent.get(current) ?? []));
+  }
+  return descendants;
+}
+
+function getSiblingCategories(parentId: string | null, categories: Category[]) {
+  return categories
+    .filter((category) => (category.parentId ?? null) === parentId)
+    .sort((a, b) => {
+      if (a.sortIndex !== b.sortIndex) return a.sortIndex - b.sortIndex;
+      return a.name.localeCompare(b.name, 'pt-BR');
+    });
 }
 
 function formatShortcutForDisplay(shortcut: string, isMac: boolean) {
@@ -517,16 +605,18 @@ export function ManagerApp() {
     visible: boolean;
   }>({ title: '', description: '', visible: false });
   const [previewOpen, setPreviewOpen] = useState(false);
-  const [categoryDialogOpen, setCategoryDialogOpen] = useState(false);
-  const [categoryDialogParentId, setCategoryDialogParentId] = useState<string | null>(null);
-  const [promptState, setPromptState] = useState<PromptState | null>(null);
+  const [categoryPickerOpen, setCategoryPickerOpen] = useState(false);
+  const [categoryManagerOpen, setCategoryManagerOpen] = useState(false);
+  const [categoryPickerExpandedIds, setCategoryPickerExpandedIds] = useState<Set<string>>(new Set());
+  const [categoryManagerExpandedIds, setCategoryManagerExpandedIds] = useState<Set<string>>(new Set());
+  const [categoryManagerSelectedId, setCategoryManagerSelectedId] = useState<string | null>(null);
+  const [categoryDraft, setCategoryDraft] = useState<CategoryDraftState | null>(null);
   const [confirmState, setConfirmState] = useState<ConfirmState | null>(null);
   const [iconState, setIconState] = useState<IconState | null>(null);
   const [iconTab, setIconTab] = useState<'lucide' | 'emoji'>('lucide');
   const [iconSearch, setIconSearch] = useState('');
   const [emojiValue, setEmojiValue] = useState('📁');
   const [importState, setImportState] = useState<ImportState | null>(null);
-  const [categoryPickerMode, setCategoryPickerMode] = useState<'manage' | 'pick'>('manage');
   const [conflictText, setConflictText] = useState('');
   const shortcutRef = useRef<HTMLButtonElement | null>(null);
   const pendingUpdateRef = useRef<AppUpdate | null>(null);
@@ -542,7 +632,6 @@ export function ManagerApp() {
   );
 
   const visibleCategories = useMemo(() => {
-    if (search.trim()) return [];
     const filtered = categories.filter((category) => (category.parentId || null) === (currentCategoryId || null));
     const sortMode = currentCategory?.sortMode ?? 'manual';
     return [...filtered].sort((a, b) => {
@@ -554,9 +643,11 @@ export function ManagerApp() {
 
   const visibleSnippets = useMemo(() => {
     const query = search.trim().toLowerCase();
+    const normalizedQuery = normalizeSnippetTriggerInput(query).toLowerCase();
     const list = query
       ? snippets.filter((snippet) =>
         snippet.trigger.toLowerCase().includes(query) ||
+        snippet.trigger.toLowerCase().includes(normalizedQuery) ||
         snippet.name.toLowerCase().includes(query) ||
         snippet.categoryPath.toLowerCase().includes(query) ||
         snippet.tags.some((tag) => tag.toLowerCase().includes(query))
@@ -571,33 +662,45 @@ export function ManagerApp() {
     });
   }, [currentCategoryId, search, snippets, sortOrder]);
 
-  const categoryDialogCategories = useMemo(() => {
-    const filtered = categories.filter((category) => (category.parentId || null) === (categoryDialogParentId || null));
-    const parent = categories.find((category) => category.id === categoryDialogParentId) ?? null;
-    const sortMode = parent?.sortMode ?? 'manual';
-    return [...filtered].sort((a, b) => {
-      if (sortMode === 'alphabetical') return a.name.localeCompare(b.name, 'pt-BR');
-      if (a.sortIndex !== b.sortIndex) return a.sortIndex - b.sortIndex;
-      return a.name.localeCompare(b.name, 'pt-BR');
-    });
-  }, [categories, categoryDialogParentId]);
-
   const filteredLucideIcons = useMemo(
     () => lucideIconOptions.filter(([name]) => name.toLowerCase().includes(iconSearch.toLowerCase())),
     [iconSearch]
   );
 
-  const canDragSnippetsToCategory = !search.trim() && currentCategoryId === null;
-  const categorySelectOptions = useMemo(
-    () =>
-      [...categories]
-        .map((category) => ({
-          id: category.id,
-          path: getCategoryPath(category.id) || category.name,
-        }))
-        .sort((a, b) => a.path.localeCompare(b.path, 'pt-BR')),
-    [categories]
-  );
+  const categoryTree = useMemo(() => buildCategoryTree(categories), [categories]);
+
+  const categorySnippetCounts = useMemo(() => {
+    const byParent = new Map<string | null, string[]>();
+    for (const category of categories) {
+      const parentKey = category.parentId ?? null;
+      const current = byParent.get(parentKey) ?? [];
+      current.push(category.id);
+      byParent.set(parentKey, current);
+    }
+
+    const directCounts = new Map<string, number>();
+    for (const snippet of snippets) {
+      if (!snippet.categoryId) continue;
+      directCounts.set(snippet.categoryId, (directCounts.get(snippet.categoryId) ?? 0) + 1);
+    }
+
+    const totals = new Map<string, number>();
+    const countAll = (categoryId: string): number => {
+      if (totals.has(categoryId)) return totals.get(categoryId)!;
+      const nested = (byParent.get(categoryId) ?? []).reduce((sum, childId) => sum + countAll(childId), 0);
+      const total = (directCounts.get(categoryId) ?? 0) + nested;
+      totals.set(categoryId, total);
+      return total;
+    };
+
+    for (const category of categories) {
+      countAll(category.id);
+    }
+
+    return totals;
+  }, [categories, snippets]);
+
+  const canDragSnippetsToCategory = !search.trim();
 
   function getCategoryById(id: string | null) {
     return categories.find((category) => category.id === id) ?? null;
@@ -612,6 +715,13 @@ export function ManagerApp() {
       cursor = getCategoryById(cursor.parentId);
     }
     return names.reverse().join(' / ');
+  }
+
+  function getSortModeForParent(parentId: string | null) {
+    if (parentId === null) {
+      return categories.find((category) => category.parentId === null)?.sortMode ?? 'manual';
+    }
+    return getCategoryById(parentId)?.sortMode ?? 'manual';
   }
 
   async function loadSnapshot(selectSnippetId?: string | null) {
@@ -903,6 +1013,31 @@ export function ManagerApp() {
     void checkPlatform();
   }, []);
 
+  useEffect(() => {
+    if (!categoryManagerSelectedId) return;
+    const selected = getCategoryById(categoryManagerSelectedId);
+    if (!selected) {
+      setCategoryManagerSelectedId(null);
+      if (categoryDraft?.id === categoryManagerSelectedId) {
+        setCategoryDraft(null);
+      }
+      return;
+    }
+
+    if (categoryDraft?.mode === 'edit' && categoryDraft.id === selected.id) {
+      setCategoryDraft((current) =>
+        current
+          ? {
+              ...current,
+              name: selected.name,
+              parentId: selected.parentId,
+              icon: selected.icon,
+            }
+          : current
+      );
+    }
+  }, [categories]);
+
   function openNewSnippet() {
     setSelectedSnippetId(null);
     setDraft(emptyDraft());
@@ -916,7 +1051,8 @@ export function ManagerApp() {
   }
 
   async function saveSnippet() {
-    if (!draft.trigger.trim()) {
+    const normalizedTrigger = normalizeSnippetTriggerInput(draft.trigger);
+    if (!normalizedTrigger) {
       toast.error('O gatilho é obrigatório.');
       return;
     }
@@ -929,7 +1065,7 @@ export function ManagerApp() {
       return;
     }
     const payload = {
-      trigger: draft.trigger.trim(),
+      trigger: normalizedTrigger,
       name: draft.name.trim(),
       categoryId: draft.categoryId,
       tags: draft.tags.split(',').map((tag) => tag.trim()).filter(Boolean),
@@ -996,26 +1132,58 @@ export function ManagerApp() {
     }
   }
 
-  function openCategoryPicker(mode: 'manage' | 'pick') {
-    setCategoryPickerMode(mode);
-    setCategoryDialogParentId(mode === 'pick' ? draft.categoryId ?? null : currentCategoryId);
-    setCategoryDialogOpen(true);
+  function openCategoryPicker() {
+    setCategoryPickerExpandedIds(new Set(getAncestorIds(draft.categoryId, categories)));
+    setCategoryPickerOpen(true);
   }
 
-  async function handleSidebarCategoryDrop(event: DragEndEvent) {
-    const { active, over } = event;
-    if (!over || active.id === over.id) return;
-    const ids = visibleCategories.map((category) => category.id);
-    const oldIndex = ids.indexOf(String(active.id));
-    const newIndex = ids.indexOf(String(over.id));
-    if (oldIndex < 0 || newIndex < 0) return;
-    const next = arrayMove(ids, oldIndex, newIndex);
-    try {
-      await coreInvoke('reorder_categories', { parentId: currentCategoryId, orderedIds: next });
-      await loadSnapshot(selectedSnippetId);
-    } catch (error) {
-      toast.error(`Erro ao reordenar categorias: ${String(error)}`);
+  function openCategoryManager(targetId?: string | null) {
+    const nextSelectedId = targetId ?? currentCategoryId ?? draft.categoryId ?? categories.find((category) => category.parentId === null)?.id ?? null;
+    setCategoryManagerSelectedId(nextSelectedId);
+    setCategoryManagerExpandedIds(new Set(getAncestorIds(nextSelectedId, categories)));
+    setCategoryDraft(
+      nextSelectedId
+        ? (() => {
+            const selected = getCategoryById(nextSelectedId);
+            return selected
+              ? {
+                  mode: 'edit' as const,
+                  id: selected.id,
+                  name: selected.name,
+                  parentId: selected.parentId,
+                  icon: selected.icon,
+                }
+              : null;
+          })()
+        : null
+    );
+    setCategoryManagerOpen(true);
+  }
+
+  function startCategoryDraft(mode: CategoryDraftState['mode'], target?: Category | null) {
+    if (mode === 'edit' && target) {
+      setCategoryManagerSelectedId(target.id);
+      setCategoryManagerExpandedIds((current) => new Set([...current, ...getAncestorIds(target.id, categories)]));
+      setCategoryDraft({
+        mode,
+        id: target.id,
+        name: target.name,
+        parentId: target.parentId,
+        icon: target.icon,
+      });
+      return;
     }
+
+    const parentId = mode === 'create-child' ? target?.id ?? categoryManagerSelectedId ?? null : null;
+    if (parentId) {
+      setCategoryManagerExpandedIds((current) => new Set([...current, parentId]));
+    }
+    setCategoryDraft({
+      mode,
+      name: '',
+      parentId,
+      icon: { kind: 'lucide', value: 'folder' },
+    });
   }
 
   async function moveSnippetToCategory(snippetId: string, categoryId: string) {
@@ -1042,65 +1210,76 @@ export function ManagerApp() {
     }
   }
 
-  async function handleDialogCategoryDrop(event: DragEndEvent) {
+  async function handleCategoryManagerDrop(event: DragEndEvent) {
     const { active, over } = event;
     if (!over || active.id === over.id) return;
-    const ids = categoryDialogCategories.map((category) => category.id);
-    const oldIndex = ids.indexOf(String(active.id));
-    const newIndex = ids.indexOf(String(over.id));
+    const activeCategory = getCategoryById(String(active.id));
+    const overCategory = getCategoryById(String(over.id));
+    if (!activeCategory || !overCategory) return;
+
+    const parentId = activeCategory.parentId ?? null;
+    if ((overCategory.parentId ?? null) !== parentId) return;
+
+    const ids = getSiblingCategories(parentId, categories).map((category) => category.id);
+    const oldIndex = ids.indexOf(activeCategory.id);
+    const newIndex = ids.indexOf(overCategory.id);
     if (oldIndex < 0 || newIndex < 0) return;
     const next = arrayMove(ids, oldIndex, newIndex);
     try {
-      await coreInvoke('reorder_categories', { parentId: categoryDialogParentId, orderedIds: next });
+      await coreInvoke('reorder_categories', { parentId, orderedIds: next });
       await loadSnapshot(selectedSnippetId);
     } catch (error) {
       toast.error(`Erro ao reordenar categorias: ${String(error)}`);
     }
   }
 
-  async function setSortMode(nextMode: 'manual' | 'alphabetical') {
+  async function setSortMode(nextMode: 'manual' | 'alphabetical', parentId: string | null = currentCategoryId) {
     try {
-      await coreInvoke('set_category_sort_mode', { parentId: currentCategoryId, sortMode: nextMode });
+      await coreInvoke('set_category_sort_mode', { parentId, sortMode: nextMode });
       await loadSnapshot(selectedSnippetId);
     } catch (error) {
       toast.error(`Erro ao alterar ordenação: ${String(error)}`);
     }
   }
 
-  function openCreateCategory() {
-    setPromptState({
-      open: true,
-      title: 'Nova categoria',
-      description: 'Crie uma categoria no nível atual.',
-      label: 'Nome da categoria',
-      defaultValue: '',
-      onSubmit: async (value) => {
-        const selectedIcon = await chooseIcon({ kind: 'lucide', value: 'folder' });
-        if (!selectedIcon) return;
-        await coreInvoke('create_category', { name: value, parentId: categoryDialogParentId, icon: selectedIcon });
-        toast.success('Categoria criada.');
-        await loadSnapshot(selectedSnippetId);
-      },
-    });
-  }
-
-  function openRenameCategory(category: Category) {
-    setPromptState({
-      open: true,
-      title: 'Renomear categoria',
-      label: 'Nome da categoria',
-      defaultValue: category.name,
-      onSubmit: async (value) => {
+  async function saveCategoryDraft() {
+    if (!categoryDraft) return;
+    try {
+      if (categoryDraft.mode === 'edit' && categoryDraft.id) {
         await coreInvoke('update_category', {
-          id: category.id,
-          name: value,
-          parentId: category.parentId,
-          icon: category.icon,
+          id: categoryDraft.id,
+          name: categoryDraft.name.trim(),
+          parentId: categoryDraft.parentId,
+          icon: categoryDraft.icon,
         });
         toast.success('Categoria atualizada.');
+      } else {
+        const created = await coreInvoke<Category>('create_category', {
+          name: categoryDraft.name.trim(),
+          parentId: categoryDraft.parentId,
+          icon: categoryDraft.icon,
+        });
+        setCategoryManagerSelectedId(created.id);
+        setCategoryManagerExpandedIds((current) => new Set([...current, ...getAncestorIds(created.id, [...categories, created])]));
+        setCategoryDraft({
+          mode: 'edit',
+          id: created.id,
+          name: created.name,
+          parentId: created.parentId,
+          icon: created.icon,
+        });
+        toast.success('Categoria criada.');
         await loadSnapshot(selectedSnippetId);
-      },
-    });
+        return;
+      }
+      const nextId = categoryDraft.id ?? categoryManagerSelectedId;
+      if (nextId) {
+        setCategoryManagerExpandedIds((current) => new Set([...current, ...getAncestorIds(nextId, categories)]));
+      }
+      await loadSnapshot(selectedSnippetId);
+    } catch (error) {
+      toast.error(`Erro ao salvar categoria: ${String(error)}`);
+    }
   }
 
   function chooseIcon(initial: CategoryIcon) {
@@ -1128,6 +1307,10 @@ export function ManagerApp() {
         toast.success('Categoria removida.');
         if (draft.categoryId === category.id) {
           setDraft((state) => ({ ...state, categoryId: null }));
+        }
+        if (categoryManagerSelectedId === category.id) {
+          setCategoryManagerSelectedId(category.parentId ?? null);
+          setCategoryDraft(null);
         }
         await loadSnapshot(selectedSnippetId);
       },
@@ -1325,147 +1508,32 @@ export function ManagerApp() {
 
   return (
     <div className="flex h-full bg-transparent text-zinc-100">
-      <aside className="flex w-[320px] min-w-[320px] flex-col border-r border-zinc-900 bg-zinc-950/85 backdrop-blur-xl">
-        <div className="border-b border-zinc-900 px-4 py-5">
-          <div className="flex items-center gap-3">
-            <img src={logo} alt="" className="h-11 w-11 rounded-xl object-contain" />
-            <div>
-              <div className="text-[10px] font-semibold uppercase tracking-[0.24em] text-zinc-500">Macro Expander</div>
-              <div className="text-xl font-black tracking-tight text-amber-400">guepardosys-snip</div>
-            </div>
-          </div>
-          <div className="mt-4 flex items-center gap-2">
-            <div className="relative min-w-0 flex-1">
-              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-500" />
-              <Input className="pl-10" placeholder="Buscar snippets..." value={search} onChange={(e) => setSearch(e.target.value)} />
-            </div>
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button variant="outline" size="icon" aria-label="Ordenar snippets">
-                  <ArrowUpDown className="h-4 w-4 text-zinc-400" />
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end" className="w-44">
-                <DropdownMenuLabel>Ordenar snippets</DropdownMenuLabel>
-                <DropdownMenuRadioGroup value={sortOrder} onValueChange={(value) => setSortOrder(value as SortOrder)}>
-                  <DropdownMenuRadioItem value="recent">Mais recentes</DropdownMenuRadioItem>
-                  <DropdownMenuRadioItem value="used">Mais usados</DropdownMenuRadioItem>
-                  <DropdownMenuRadioItem value="name">Nome</DropdownMenuRadioItem>
-                </DropdownMenuRadioGroup>
-              </DropdownMenuContent>
-            </DropdownMenu>
-          </div>
-        </div>
-
-        <div className="flex items-center gap-3 border-b border-zinc-900 px-4 py-3">
-          <Button
-            variant="secondary"
-            size="icon-sm"
-            aria-label={currentCategoryId ? 'Voltar para pasta anterior' : 'Pasta raiz'}
-            disabled={!currentCategoryId}
-            onClick={() => setCurrentCategoryId(currentCategory?.parentId ?? null)}
-          >
-              {currentCategoryId ? <ArrowLeft className="h-4 w-4" /> : <House className="h-4 w-4" />}
-          </Button>
-          <div className="min-w-0 flex-1">
-            <div className="text-[10px] font-semibold uppercase tracking-[0.24em] text-zinc-500">Pasta atual</div>
-            <div className="truncate text-sm font-semibold">{getCategoryPath(currentCategoryId) || 'Raiz'}</div>
-          </div>
-        </div>
-
-        <ScrollArea className="flex-1">
-          <div className="p-3">
-            {!visibleCategories.length && !visibleSnippets.length ? (
-              <div className="rounded-2xl border border-dashed border-zinc-800 bg-zinc-950/80 px-4 py-8 text-center text-sm text-zinc-500">
-                <ClipboardList className="mx-auto mb-3 h-8 w-8 opacity-50" />
-                {search.trim() ? 'Nenhum snippet encontrado.' : currentCategoryId ? 'Esta pasta está vazia.' : 'Nenhum snippet ainda.'}
-              </div>
-            ) : null}
-
-            {!search.trim() && (currentCategory?.sortMode ?? 'manual') === 'manual' ? (
-              <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={(event) => void handleSidebarCategoryDrop(event)}>
-                <SortableContext items={visibleCategories.map((item) => item.id)} strategy={verticalListSortingStrategy}>
-                  <div className="space-y-2">
-                    {visibleCategories.map((category) => (
-                      <SortableSidebarCategory
-                        key={category.id}
-                        category={category}
-                        onOpen={() => setCurrentCategoryId(category.id)}
-                        isSnippetDropTarget={snippetDropCategoryId === category.id}
-                        canAcceptSnippetDrop={canDragSnippetsToCategory}
-                        onSnippetDragEnter={() => setSnippetDropCategoryId(category.id)}
-                        onSnippetDragLeave={() => {
-                          setSnippetDropCategoryId((current) => (current === category.id ? null : current));
-                        }}
-                        onSnippetDrop={() => void (draggedSnippetId ? moveSnippetToCategory(draggedSnippetId, category.id) : Promise.resolve())}
-                      />
-                    ))}
-                  </div>
-                </SortableContext>
-              </DndContext>
-            ) : (
-              <div className="space-y-2">
-                {visibleCategories.map((category) => (
-                  <SidebarCategoryCard
-                    key={category.id}
-                    category={category}
-                    onOpen={() => setCurrentCategoryId(category.id)}
-                    isSnippetDropTarget={snippetDropCategoryId === category.id}
-                    canAcceptSnippetDrop={canDragSnippetsToCategory}
-                    onSnippetDragEnter={() => setSnippetDropCategoryId(category.id)}
-                    onSnippetDragLeave={() => {
-                      setSnippetDropCategoryId((current) => (current === category.id ? null : current));
-                    }}
-                    onSnippetDrop={() => void (draggedSnippetId ? moveSnippetToCategory(draggedSnippetId, category.id) : Promise.resolve())}
-                  />
-                ))}
-              </div>
-            )}
-
-            <div className="mt-3 space-y-2">
-              {visibleSnippets.map((snippet) => (
-                <button
-                  key={snippet.id}
-                  type="button"
-                  onClick={() => openSnippet(snippet)}
-                  draggable={canDragSnippetsToCategory}
-                  onDragStart={() => setDraggedSnippetId(snippet.id)}
-                  onDragEnd={() => {
-                    setDraggedSnippetId(null);
-                    setSnippetDropCategoryId(null);
-                  }}
-                  className={cn(
-                    'block w-full rounded-2xl border px-4 py-3 text-left transition-colors',
-                    selectedSnippetId === snippet.id
-                      ? 'border-amber-500/70 bg-amber-500/10'
-                      : 'border-zinc-900 bg-zinc-950/80 hover:border-zinc-700 hover:bg-zinc-900',
-                    canDragSnippetsToCategory && 'cursor-grab active:cursor-grabbing'
-                  )}
-                >
-                  <div className="font-mono text-sm font-bold text-amber-400">{snippet.favorite ? '★ ' : ''}{snippet.trigger}</div>
-                  <div className="mt-1 text-sm font-medium">{snippet.name}</div>
-                  <div className="mt-2 text-xs text-zinc-500">{snippet.categoryPath || 'Sem categoria'} · {snippet.usageCount || 0} usos</div>
-                </button>
-              ))}
-            </div>
-          </div>
-        </ScrollArea>
-
-        <div className="border-t border-zinc-900 bg-black/20 p-3">
-          <div className="flex items-center gap-2">
-            <Button className="flex-1" onClick={openNewSnippet}>
-              <Zap className="h-4 w-4" />
-              Novo Snippet
-            </Button>
-            <Button variant="secondary" size="icon" onClick={() => openCategoryPicker('manage')}>
-              <FolderCog className="h-4 w-4" />
-            </Button>
-            <Button variant="secondary" size="icon" onClick={() => { setPanel('settings'); void loadSettings(); }}>
-              <Settings className="h-4 w-4" />
-            </Button>
-          </div>
-        </div>
-      </aside>
+      <CategoryExplorerSidebar
+        logo={logo}
+        search={search}
+        onSearchChange={setSearch}
+        sortOrder={sortOrder}
+        onSortOrderChange={(value) => setSortOrder(value)}
+        currentCategoryId={currentCategoryId}
+        currentCategoryPath={getCategoryPath(currentCategoryId)}
+        categories={visibleCategories}
+        categoryCounts={categorySnippetCounts}
+        onBack={() => setCurrentCategoryId(currentCategory?.parentId ?? null)}
+        onOpenCategory={(categoryId) => setCurrentCategoryId(categoryId)}
+        onNewSnippet={openNewSnippet}
+        onManageCategories={() => openCategoryManager(currentCategoryId)}
+        onOpenSettings={() => {
+          setPanel('settings');
+          void loadSettings();
+        }}
+        snippetDropCategoryId={snippetDropCategoryId}
+        canAcceptSnippetDrop={canDragSnippetsToCategory}
+        onSnippetDragEnter={setSnippetDropCategoryId}
+        onSnippetDragLeave={(categoryId) => {
+          setSnippetDropCategoryId((current) => (current === categoryId ? null : current));
+        }}
+        onSnippetDrop={(categoryId) => void (draggedSnippetId ? moveSnippetToCategory(draggedSnippetId, categoryId) : Promise.resolve())}
+      />
 
       <main className="flex-1 overflow-hidden bg-[#0b0d14]">
         {permissionInfo.visible ? (
@@ -1486,182 +1554,138 @@ export function ManagerApp() {
           </div>
         ) : null}
 
-        {panel === 'empty' ? (
-          <div className="flex h-full flex-col items-center justify-center gap-4 px-8 text-center text-zinc-400">
-            <Keyboard className="h-12 w-12 opacity-40" />
-            <div className="text-2xl font-bold text-white">Selecione ou crie um snippet</div>
-            <p className="max-w-lg text-sm">Escolha um snippet na lista ao lado para editar, ou clique em “Novo Snippet” para criar um.</p>
-          </div>
-        ) : null}
+        <div className="grid h-full grid-cols-1 xl:grid-cols-[minmax(340px,420px)_minmax(0,1fr)]">
+          <SnippetListPane
+            search={search}
+            currentCategoryId={currentCategoryId}
+            currentCategoryPath={getCategoryPath(currentCategoryId)}
+            snippets={visibleSnippets}
+            selectedSnippetId={selectedSnippetId}
+            onOpenSnippet={openSnippet}
+            canDragSnippets={canDragSnippetsToCategory}
+            onSnippetDragStart={setDraggedSnippetId}
+            onSnippetDragEnd={() => {
+              setDraggedSnippetId(null);
+              setSnippetDropCategoryId(null);
+            }}
+          />
 
-        {panel === 'editor' ? (
-          <ScrollArea className="h-full">
-            <div className="mx-auto max-w-6xl px-7 py-7">
-              <div className="flex flex-wrap items-center justify-between gap-4">
-                <h1 className="text-3xl font-black tracking-tight">{draft.id ? 'Editar Snippet' : 'Novo Snippet'}</h1>
-                <div className="flex flex-wrap gap-2">
-                  <Button variant={draft.favorite ? 'default' : 'secondary'} size="icon" onClick={() => void toggleFavorite()}>
-                    <Star className="h-4 w-4" />
-                  </Button>
-                  <Button variant="secondary" onClick={() => void duplicateSnippet()} disabled={!draft.id}>
-                    <Copy className="h-4 w-4" />
-                    Duplicar
-                  </Button>
-                  <Button variant="secondary" onClick={() => setPreviewOpen(true)}>
-                    <Eye className="h-4 w-4" />
-                    Preview
-                  </Button>
-                  <Button variant="destructive" onClick={() => void deleteSnippet()} disabled={!draft.id}>
-                    <Trash2 className="h-4 w-4" />
-                    Remover
-                  </Button>
-                  <Button onClick={() => void saveSnippet()}>
-                    <Save className="h-4 w-4" />
-                    Salvar
-                  </Button>
-                </div>
-              </div>
+          <div className="min-h-0 border-t border-zinc-900 xl:border-l xl:border-t-0">
+            {panel === 'settings' ? (
+              <ScrollArea className="h-full">
+                <div className="mx-auto max-w-4xl px-7 py-7">
+                  <h1 className="text-3xl font-black tracking-tight">Configurações do Aplicativo</h1>
 
-              <div className="mt-8 space-y-6">
-                <LabeledField label="Gatilho">
-                  <Input value={draft.trigger} onChange={(e) => setDraft((state) => ({ ...state, trigger: e.target.value }))} placeholder="/meu-comando" />
-                </LabeledField>
+                  <div className="mt-8 grid gap-6">
+                    <SettingsCard title="Atalho Global do Spotlight" description="Clique abaixo e pressione a combinação de teclas desejada.">
+                      <div className="flex flex-wrap items-center gap-3">
+                        <Button
+                          ref={shortcutRef}
+                          variant={recordingShortcut ? 'default' : 'secondary'}
+                          className="min-w-[260px] justify-center"
+                          onFocus={() => void handleShortcutFocus()}
+                          onBlur={() => void handleShortcutBlur()}
+                          onKeyDown={(event) => void handleShortcutKeyDown(event)}
+                        >
+                          {shortcutDisplay}
+                        </Button>
+                        <Button
+                          variant="secondary"
+                          onClick={() => void saveShortcut(isMac ? shortcutDefaults.mac : shortcutDefaults.other, isMac ? shortcutDefaults.mac : shortcutDefaults.other)}
+                        >
+                          <RotateCcw className="h-4 w-4" />
+                          Restaurar Padrão
+                        </Button>
+                      </div>
+                      {conflictText ? (
+                        <div className="mt-4 rounded-2xl border border-red-900 bg-red-950/30 p-4 text-sm text-red-200">
+                          <div className="font-semibold">Conflito de atalhos detectado</div>
+                          <p className="mt-1 text-red-300/90">{conflictText}</p>
+                          <Button variant="destructive" size="sm" className="mt-3" onClick={() => void resolveConflicts()}>
+                            Resolver automaticamente
+                          </Button>
+                        </div>
+                      ) : null}
+                    </SettingsCard>
 
-                <div className="grid gap-4 lg:grid-cols-[1.4fr_1fr]">
-                  <LabeledField label="Categoria">
-                    <Select
-                      value={draft.categoryId ?? '__none__'}
-                      onValueChange={(value) =>
-                        setDraft((state) => ({
-                          ...state,
-                          categoryId: value === '__none__' ? null : value,
-                        }))
-                      }
-                    >
-                      <SelectTrigger className="w-full">
-                        <SelectValue placeholder="Sem categoria" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="__none__">Sem categoria</SelectItem>
-                        {categorySelectOptions.map((category) => (
-                          <SelectItem key={category.id} value={category.id}>
-                            {category.path}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </LabeledField>
-                  <LabeledField label="Tags">
-                    <Input value={draft.tags} onChange={(e) => setDraft((state) => ({ ...state, tags: e.target.value }))} placeholder="email, suporte, vendas" />
-                  </LabeledField>
-                </div>
-
-                <LabeledField label="Nome">
-                  <Input value={draft.name} onChange={(e) => setDraft((state) => ({ ...state, name: e.target.value }))} placeholder="Nome descritivo do snippet" />
-                </LabeledField>
-
-                <LabeledField label="Ações (Macro)">
-                  <MacroActionEditor actions={draft.actions} onChange={(actions) => setDraft((state) => ({ ...state, actions }))} />
-                </LabeledField>
-              </div>
-            </div>
-          </ScrollArea>
-        ) : null}
-
-        {panel === 'settings' ? (
-          <ScrollArea className="h-full">
-            <div className="mx-auto max-w-4xl px-7 py-7">
-              <h1 className="text-3xl font-black tracking-tight">Configurações do Aplicativo</h1>
-
-              <div className="mt-8 grid gap-6">
-                <SettingsCard title="Atalho Global do Spotlight" description="Clique abaixo e pressione a combinação de teclas desejada.">
-                  <div className="flex flex-wrap items-center gap-3">
-                    <Button
-                      ref={shortcutRef}
-                      variant={recordingShortcut ? 'default' : 'secondary'}
-                      className="min-w-[260px] justify-center"
-                      onFocus={() => void handleShortcutFocus()}
-                      onBlur={() => void handleShortcutBlur()}
-                      onKeyDown={(event) => void handleShortcutKeyDown(event)}
-                    >
-                      {shortcutDisplay}
-                    </Button>
-                    <Button
-                      variant="secondary"
-                      onClick={() => void saveShortcut(isMac ? shortcutDefaults.mac : shortcutDefaults.other, isMac ? shortcutDefaults.mac : shortcutDefaults.other)}
-                    >
-                      <RotateCcw className="h-4 w-4" />
-                      Restaurar Padrão
-                    </Button>
-                  </div>
-                  {conflictText ? (
-                    <div className="mt-4 rounded-2xl border border-red-900 bg-red-950/30 p-4 text-sm text-red-200">
-                      <div className="font-semibold">Conflito de atalhos detectado</div>
-                      <p className="mt-1 text-red-300/90">{conflictText}</p>
-                      <Button variant="destructive" size="sm" className="mt-3" onClick={() => void resolveConflicts()}>
-                        Resolver automaticamente
-                      </Button>
-                    </div>
-                  ) : null}
-                </SettingsCard>
-
-                <SettingsCard title="Atualizações" description="O app consulta a última release publicada no GitHub.">
-                  <div className="rounded-2xl border border-zinc-800 bg-zinc-950/60 p-5">
-                    <div className="text-sm font-semibold text-white">{updateStatus.title}</div>
-                    <p className="mt-2 text-sm text-zinc-400">{updateStatus.description}</p>
-                    {updateStatus.isDownloading || updateStatus.progressPercent > 0 ? (
-                      <div className="mt-4">
-                        <div className="h-2 overflow-hidden rounded-full bg-zinc-900">
-                          <div
-                            className="h-full rounded-full bg-amber-400 transition-[width] duration-300"
-                            style={{ width: `${updateStatus.progressPercent}%` }}
-                          />
+                    <SettingsCard title="Atualizações" description="O app consulta a última release publicada no GitHub.">
+                      <div className="rounded-2xl border border-zinc-800 bg-zinc-950/60 p-5">
+                        <div className="text-sm font-semibold text-white">{updateStatus.title}</div>
+                        <p className="mt-2 text-sm text-zinc-400">{updateStatus.description}</p>
+                        {updateStatus.isDownloading || updateStatus.progressPercent > 0 ? (
+                          <div className="mt-4">
+                            <div className="h-2 overflow-hidden rounded-full bg-zinc-900">
+                              <div
+                                className="h-full rounded-full bg-amber-400 transition-[width] duration-300"
+                                style={{ width: `${updateStatus.progressPercent}%` }}
+                              />
+                            </div>
+                          </div>
+                        ) : null}
+                        <div className="mt-4 flex flex-wrap gap-2">
+                          <Button variant={updateStatus.actionLabel === 'Atualizar agora' ? 'default' : 'secondary'} disabled={!updateStatus.canRunAction} onClick={() => void handleUpdateAction()}>
+                            {updateStatus.actionLabel === 'Baixar atualização' || updateStatus.actionLabel === 'Abrir releases' ? <Download className="h-4 w-4" /> : null}
+                            {updateStatus.actionLabel === 'Verificar agora' || updateStatus.actionLabel === 'Verificando...' ? <RefreshCw className="h-4 w-4" /> : null}
+                            {updateStatus.actionLabel}
+                          </Button>
                         </div>
                       </div>
-                    ) : null}
-                    <div className="mt-4 flex flex-wrap gap-2">
-                      <Button variant={updateStatus.actionLabel === 'Atualizar agora' ? 'default' : 'secondary'} disabled={!updateStatus.canRunAction} onClick={() => void handleUpdateAction()}>
-                        {updateStatus.actionLabel === 'Baixar atualização' || updateStatus.actionLabel === 'Abrir releases' ? <Download className="h-4 w-4" /> : null}
-                        {updateStatus.actionLabel === 'Verificar agora' || updateStatus.actionLabel === 'Verificando...' ? <RefreshCw className="h-4 w-4" /> : null}
-                        {updateStatus.actionLabel}
-                      </Button>
-                    </div>
-                  </div>
-                </SettingsCard>
+                    </SettingsCard>
 
-                <SettingsCard title="Backup e restauração" description="Exporte todos os snippets em JSON ou importe um backup.">
-                  <div className="flex flex-wrap gap-2">
-                    <Button variant="secondary" onClick={() => void exportBackup()}>
-                      <Download className="h-4 w-4" />
-                      Exportar JSON
-                    </Button>
-                    <Button variant="secondary" onClick={() => void importBackup()}>
-                      <Upload className="h-4 w-4" />
-                      Importar JSON
-                    </Button>
-                    <Button variant="secondary" onClick={() => void importTextExpander()}>
-                      <Upload className="h-4 w-4" />
-                      Importar TextExpander CSV
-                    </Button>
-                  </div>
-                </SettingsCard>
+                    <SettingsCard title="Backup e restauração" description="Exporte todos os snippets em JSON ou importe um backup.">
+                      <div className="flex flex-wrap gap-2">
+                        <Button variant="secondary" onClick={() => void exportBackup()}>
+                          <Download className="h-4 w-4" />
+                          Exportar JSON
+                        </Button>
+                        <Button variant="secondary" onClick={() => void importBackup()}>
+                          <Upload className="h-4 w-4" />
+                          Importar JSON
+                        </Button>
+                        <Button variant="secondary" onClick={() => void importTextExpander()}>
+                          <Upload className="h-4 w-4" />
+                          Importar TextExpander CSV
+                        </Button>
+                      </div>
+                    </SettingsCard>
 
-                <SettingsCard title="Permissões do sistema" description="Abra as configurações do sistema para revisar permissões ou atalhos.">
-                  <div className="flex flex-wrap gap-2">
-                    <Button variant="secondary" onClick={() => void openSystemSettings()}>
-                      <ShieldAlert className="h-4 w-4" />
-                      Abrir configurações
-                    </Button>
-                    <Button variant="ghost" onClick={() => setPanel(selectedSnippet ? 'editor' : 'empty')}>
-                      <HelpCircle className="h-4 w-4" />
-                      Voltar ao manager
-                    </Button>
+                    <SettingsCard title="Permissões do sistema" description="Abra as configurações do sistema para revisar permissões ou atalhos.">
+                      <div className="flex flex-wrap gap-2">
+                        <Button variant="secondary" onClick={() => void openSystemSettings()}>
+                          <ShieldAlert className="h-4 w-4" />
+                          Abrir configurações
+                        </Button>
+                        <Button variant="ghost" onClick={() => setPanel(selectedSnippet ? 'editor' : 'empty')}>
+                          <HelpCircle className="h-4 w-4" />
+                          Voltar ao manager
+                        </Button>
+                      </div>
+                    </SettingsCard>
                   </div>
-                </SettingsCard>
+                </div>
+              </ScrollArea>
+            ) : panel === 'editor' ? (
+              <SnippetEditorPane
+                draft={draft}
+                categoryLabel={draft.categoryId ? getCategoryPath(draft.categoryId) : 'Sem categoria'}
+                onChangeDraft={setDraft}
+                onToggleFavorite={() => void toggleFavorite()}
+                onDuplicate={() => void duplicateSnippet()}
+                onPreview={() => setPreviewOpen(true)}
+                onDelete={() => void deleteSnippet()}
+                onSave={() => void saveSnippet()}
+                onOpenCategoryPicker={openCategoryPicker}
+                onClearCategory={() => setDraft((state) => ({ ...state, categoryId: null }))}
+              />
+            ) : (
+              <div className="flex h-full flex-col items-center justify-center gap-4 px-8 text-center text-zinc-400">
+                <Keyboard className="h-12 w-12 opacity-40" />
+                <div className="text-2xl font-bold text-white">Selecione ou crie um snippet</div>
+                <p className="max-w-lg text-sm">Escolha um snippet na lista ao lado para editar, ou clique em “Novo Snippet” para criar um.</p>
               </div>
-            </div>
-          </ScrollArea>
-        ) : null}
+            )}
+          </div>
+        </div>
       </main>
 
       <Dialog open={previewOpen} onOpenChange={setPreviewOpen}>
@@ -1676,107 +1700,80 @@ export function ManagerApp() {
         </DialogContent>
       </Dialog>
 
-      <Dialog open={categoryDialogOpen} onOpenChange={setCategoryDialogOpen}>
-        <DialogContent className="w-[min(94vw,940px)]">
-          <DialogHeader>
-            <DialogTitle>Gerenciar categorias</DialogTitle>
-            <DialogDescription>Navegue por níveis, selecione uma categoria ou reorganize as pastas.</DialogDescription>
-          </DialogHeader>
-          <div className="flex items-center gap-3 px-6 pt-2">
-            {categoryDialogParentId ? (
-              <Button variant="secondary" size="sm" onClick={() => setCategoryDialogParentId(getCategoryById(categoryDialogParentId)?.parentId ?? null)}>
-                <ArrowLeft className="h-4 w-4" />
-                Voltar
-              </Button>
-            ) : null}
-            <div className="min-w-0 flex-1">
-              <div className="text-[10px] font-semibold uppercase tracking-[0.24em] text-zinc-500">Navegando em</div>
-              <div className="truncate text-sm font-semibold">{getCategoryPath(categoryDialogParentId) || 'Raiz'}</div>
-            </div>
-            <Button variant="secondary" size="sm" onClick={() => openCreateCategory()}>
-              <FolderPlus className="h-4 w-4" />
-              Nova
-            </Button>
-            {categoryPickerMode === 'pick' ? (
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => {
-                  setDraft((state) => ({ ...state, categoryId: null }));
-                  setCategoryDialogOpen(false);
-                }}
-              >
-                Sem categoria
-              </Button>
-            ) : null}
-          </div>
-          <div className="px-6 py-5">
-            {(getCategoryById(categoryDialogParentId)?.sortMode ?? 'manual') === 'manual' ? (
-              <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={(event) => void handleDialogCategoryDrop(event)}>
-                <SortableContext items={categoryDialogCategories.map((item) => item.id)} strategy={verticalListSortingStrategy}>
-                  <div className="space-y-2">
-                    {categoryDialogCategories.map((category) => (
-                      <SortableCategoryDialogRow
-                        key={category.id}
-                        category={category}
-                        onOpen={() => setCategoryDialogParentId(category.id)}
-                        onSelect={() => {
-                          setDraft((state) => ({ ...state, categoryId: category.id }));
-                          setCategoryDialogOpen(false);
-                        }}
-                        onRename={() => openRenameCategory(category)}
-                        onIcon={async () => {
-                          const icon = await chooseIcon(category.icon);
-                          if (!icon) return;
-                          await coreInvoke('update_category', {
-                            id: category.id,
-                            name: category.name,
-                            parentId: category.parentId,
-                            icon,
-                          });
-                          toast.success('Ícone atualizado.');
-                          await loadSnapshot(selectedSnippetId);
-                        }}
-                        onDelete={() => openDeleteCategory(category)}
-                        canSelect={categoryPickerMode === 'pick'}
-                      />
-                    ))}
-                  </div>
-                </SortableContext>
-              </DndContext>
-            ) : (
-              <div className="space-y-2">
-                {categoryDialogCategories.map((category) => (
-                  <CategoryDialogRow
-                    key={category.id}
-                    category={category}
-                    onOpen={() => setCategoryDialogParentId(category.id)}
-                    onSelect={() => {
-                      setDraft((state) => ({ ...state, categoryId: category.id }));
-                      setCategoryDialogOpen(false);
-                    }}
-                    onRename={() => openRenameCategory(category)}
-                    onIcon={async () => {
-                      const icon = await chooseIcon(category.icon);
-                      if (!icon) return;
-                      await coreInvoke('update_category', {
-                        id: category.id,
-                        name: category.name,
-                        parentId: category.parentId,
-                        icon,
-                      });
-                      toast.success('Ícone atualizado.');
-                      await loadSnapshot(selectedSnippetId);
-                    }}
-                    onDelete={() => openDeleteCategory(category)}
-                    canSelect={categoryPickerMode === 'pick'}
-                  />
-                ))}
-              </div>
-            )}
-          </div>
-        </DialogContent>
-      </Dialog>
+      <CategoryPickerDialog
+        open={categoryPickerOpen}
+        categories={categoryTree}
+        expandedIds={categoryPickerExpandedIds}
+        selectedCategoryId={draft.categoryId}
+        onOpenChange={setCategoryPickerOpen}
+        onToggleExpanded={(categoryId) =>
+          setCategoryPickerExpandedIds((current) => {
+            const next = new Set(current);
+            if (next.has(categoryId)) next.delete(categoryId);
+            else next.add(categoryId);
+            return next;
+          })
+        }
+        onSelectCategory={(categoryId) => {
+          setDraft((state) => ({ ...state, categoryId }));
+          setCategoryPickerOpen(false);
+        }}
+        onClearCategory={() => {
+          setDraft((state) => ({ ...state, categoryId: null }));
+          setCategoryPickerOpen(false);
+        }}
+        onOpenManager={() => {
+          setCategoryPickerOpen(false);
+          openCategoryManager(draft.categoryId);
+        }}
+      />
+
+      <CategoryManagerDialog
+        open={categoryManagerOpen}
+        categories={categories}
+        tree={categoryTree}
+        expandedIds={categoryManagerExpandedIds}
+        selectedCategoryId={categoryManagerSelectedId}
+        categoryDraft={categoryDraft}
+        categoryCounts={categorySnippetCounts}
+        sensors={sensors}
+        getCategoryPath={getCategoryPath}
+        getSortModeForParent={getSortModeForParent}
+        onOpenChange={setCategoryManagerOpen}
+        onToggleExpanded={(categoryId) =>
+          setCategoryManagerExpandedIds((current) => {
+            const next = new Set(current);
+            if (next.has(categoryId)) next.delete(categoryId);
+            else next.add(categoryId);
+            return next;
+          })
+        }
+        onSelectCategory={(categoryId) => {
+          const selected = getCategoryById(categoryId);
+          setCategoryManagerSelectedId(categoryId);
+          setCategoryManagerExpandedIds((current) => new Set([...current, ...getAncestorIds(categoryId, categories)]));
+          if (selected) {
+            setCategoryDraft({
+              mode: 'edit',
+              id: selected.id,
+              name: selected.name,
+              parentId: selected.parentId,
+              icon: selected.icon,
+            });
+          }
+        }}
+        onCreateRoot={() => startCategoryDraft('create-root')}
+        onCreateChild={() => startCategoryDraft('create-child', getCategoryById(categoryManagerSelectedId))}
+        onDeleteSelected={() => {
+          const selected = getCategoryById(categoryManagerSelectedId);
+          if (selected) openDeleteCategory(selected);
+        }}
+        onSaveDraft={() => void saveCategoryDraft()}
+        onChangeDraft={setCategoryDraft}
+        onChooseIcon={chooseIcon}
+        onReorder={(event) => void handleCategoryManagerDrop(event)}
+        onSetSortMode={(sortMode, parentId) => void setSortMode(sortMode, parentId)}
+      />
 
       <Dialog open={Boolean(iconState?.open)} onOpenChange={(open) => !open && setIconState(null)}>
         <DialogContent className="w-[min(92vw,760px)]">
@@ -1835,11 +1832,6 @@ export function ManagerApp() {
         </DialogContent>
       </Dialog>
 
-      <PromptDialog
-        state={promptState}
-        onClose={() => setPromptState(null)}
-      />
-
       <ConfirmDialog state={confirmState} onClose={() => setConfirmState(null)} />
 
       <Dialog open={Boolean(importState?.open)} onOpenChange={(open) => !open && setImportState(null)}>
@@ -1881,9 +1873,353 @@ function SettingsCard({ title, description, children }: { title: string; descrip
   );
 }
 
+function CategoryExplorerSidebar({
+  logo,
+  search,
+  onSearchChange,
+  sortOrder,
+  onSortOrderChange,
+  currentCategoryId,
+  currentCategoryPath,
+  categories,
+  categoryCounts,
+  onBack,
+  onOpenCategory,
+  onNewSnippet,
+  onManageCategories,
+  onOpenSettings,
+  snippetDropCategoryId,
+  canAcceptSnippetDrop,
+  onSnippetDragEnter,
+  onSnippetDragLeave,
+  onSnippetDrop,
+}: {
+  logo: string;
+  search: string;
+  onSearchChange: (value: string) => void;
+  sortOrder: SortOrder;
+  onSortOrderChange: (value: SortOrder) => void;
+  currentCategoryId: string | null;
+  currentCategoryPath: string;
+  categories: Category[];
+  categoryCounts: Map<string, number>;
+  onBack: () => void;
+  onOpenCategory: (categoryId: string) => void;
+  onNewSnippet: () => void;
+  onManageCategories: () => void;
+  onOpenSettings: () => void;
+  snippetDropCategoryId: string | null;
+  canAcceptSnippetDrop: boolean;
+  onSnippetDragEnter: (categoryId: string) => void;
+  onSnippetDragLeave: (categoryId: string) => void;
+  onSnippetDrop: (categoryId: string) => void;
+}) {
+  return (
+    <aside className="flex w-[320px] min-w-[320px] flex-col border-r border-zinc-900 bg-zinc-950/85 backdrop-blur-xl">
+      <div className="border-b border-zinc-900 px-4 py-5">
+        <div className="flex items-center gap-3">
+          <img src={logo} alt="" className="h-11 w-11 rounded-xl object-contain" />
+          <div>
+            <div className="text-[10px] font-semibold uppercase tracking-[0.24em] text-zinc-500">Macro Expander</div>
+            <div className="text-xl font-black tracking-tight text-amber-400">guepardosys-snip</div>
+          </div>
+        </div>
+        <div className="mt-4 flex items-center gap-2">
+          <div className="relative min-w-0 flex-1">
+            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-500" />
+            <Input className="pl-10" placeholder="Buscar snippets..." value={search} onChange={(e) => onSearchChange(e.target.value)} />
+          </div>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="outline" size="icon" aria-label="Ordenar snippets">
+                <ArrowUpDown className="h-4 w-4 text-zinc-400" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-44">
+              <DropdownMenuLabel>Ordenar snippets</DropdownMenuLabel>
+              <DropdownMenuRadioGroup value={sortOrder} onValueChange={(value) => onSortOrderChange(value as SortOrder)}>
+                <DropdownMenuRadioItem value="recent">Mais recentes</DropdownMenuRadioItem>
+                <DropdownMenuRadioItem value="used">Mais usados</DropdownMenuRadioItem>
+                <DropdownMenuRadioItem value="name">Nome</DropdownMenuRadioItem>
+              </DropdownMenuRadioGroup>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
+      </div>
+
+      <div className="border-b border-zinc-900 px-4 py-4">
+        <div className="flex items-center gap-3">
+          <Button
+            variant="secondary"
+            size="icon-sm"
+            aria-label={currentCategoryId ? 'Voltar para pasta anterior' : 'Pasta raiz'}
+            disabled={!currentCategoryId}
+            onClick={onBack}
+          >
+            {currentCategoryId ? <ArrowLeft className="h-4 w-4" /> : <House className="h-4 w-4" />}
+          </Button>
+          <div className="min-w-0 flex-1">
+            <div className="text-[10px] font-semibold uppercase tracking-[0.24em] text-zinc-500">Explorador</div>
+            <div className="truncate text-sm font-semibold">{currentCategoryPath || 'Raiz'}</div>
+          </div>
+        </div>
+      </div>
+
+      <ScrollArea className="flex-1">
+        <div className="p-3">
+          <div className="mb-3 rounded-2xl border border-zinc-900 bg-zinc-950/70 px-4 py-3">
+            <div className="text-[10px] font-semibold uppercase tracking-[0.24em] text-zinc-500">Categorias</div>
+            <div className="mt-1 text-sm text-zinc-400">
+              {categories.length ? 'Arraste snippets para mover entre pastas.' : 'Crie categorias para organizar a biblioteca.'}
+            </div>
+          </div>
+
+          {!categories.length ? (
+            <div className="rounded-2xl border border-dashed border-zinc-800 bg-zinc-950/80 px-4 py-8 text-center text-sm text-zinc-500">
+              <ClipboardList className="mx-auto mb-3 h-8 w-8 opacity-50" />
+              Nenhuma categoria neste nível.
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {categories.map((category) => (
+                <SidebarCategoryCard
+                  key={category.id}
+                  category={category}
+                  onOpen={() => onOpenCategory(category.id)}
+                  isActive={currentCategoryId === category.id}
+                  itemCount={categoryCounts.get(category.id) ?? 0}
+                  isSnippetDropTarget={snippetDropCategoryId === category.id}
+                  canAcceptSnippetDrop={canAcceptSnippetDrop}
+                  onSnippetDragEnter={() => onSnippetDragEnter(category.id)}
+                  onSnippetDragLeave={() => onSnippetDragLeave(category.id)}
+                  onSnippetDrop={() => onSnippetDrop(category.id)}
+                />
+              ))}
+            </div>
+          )}
+        </div>
+      </ScrollArea>
+
+      <div className="border-t border-zinc-900 bg-black/20 p-3">
+        <div className="flex items-center gap-2">
+          <Button className="flex-1" onClick={onNewSnippet}>
+            <Zap className="h-4 w-4" />
+            Novo Snippet
+          </Button>
+          <Button variant="secondary" size="icon" onClick={onManageCategories}>
+            <FolderCog className="h-4 w-4" />
+          </Button>
+          <Button variant="secondary" size="icon" onClick={onOpenSettings}>
+            <Settings className="h-4 w-4" />
+          </Button>
+        </div>
+      </div>
+    </aside>
+  );
+}
+
+function SnippetListPane({
+  search,
+  currentCategoryId,
+  currentCategoryPath,
+  snippets,
+  selectedSnippetId,
+  onOpenSnippet,
+  canDragSnippets,
+  onSnippetDragStart,
+  onSnippetDragEnd,
+}: {
+  search: string;
+  currentCategoryId: string | null;
+  currentCategoryPath: string;
+  snippets: Snippet[];
+  selectedSnippetId: string | null;
+  onOpenSnippet: (snippet: Snippet) => void;
+  canDragSnippets: boolean;
+  onSnippetDragStart: (snippetId: string) => void;
+  onSnippetDragEnd: () => void;
+}) {
+  return (
+    <div className="min-h-0 border-b border-zinc-900 xl:border-b-0">
+      <ScrollArea className="h-full">
+        <div className="px-5 py-6">
+          <div className="mb-5 flex items-start justify-between gap-4">
+            <div>
+              <div className="text-[10px] font-semibold uppercase tracking-[0.24em] text-zinc-500">
+                {search.trim() ? 'Busca global' : currentCategoryId ? 'Snippets da pasta' : 'Biblioteca'}
+              </div>
+              <div className="mt-1 text-xl font-black tracking-tight text-white">
+                {search.trim() ? `Resultados para "${search}"` : currentCategoryPath || 'Todos os snippets da raiz'}
+              </div>
+            </div>
+            <div className="rounded-full border border-zinc-800 bg-zinc-950/80 px-3 py-1 text-xs text-zinc-400">
+              {snippets.length} {snippets.length === 1 ? 'snippet' : 'snippets'}
+            </div>
+          </div>
+
+          {!snippets.length ? (
+            <div className="rounded-3xl border border-dashed border-zinc-800 bg-zinc-950/80 px-6 py-12 text-center text-sm text-zinc-500">
+              <ClipboardList className="mx-auto mb-3 h-8 w-8 opacity-50" />
+              {search.trim()
+                ? 'Nenhum snippet encontrado para a busca atual.'
+                : currentCategoryId
+                  ? 'Esta pasta ainda não possui snippets.'
+                  : 'Nenhum snippet disponível na raiz.'}
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {snippets.map((snippet) => (
+                <button
+                  key={snippet.id}
+                  type="button"
+                  onClick={() => onOpenSnippet(snippet)}
+                  draggable={canDragSnippets}
+                  onDragStart={() => onSnippetDragStart(snippet.id)}
+                  onDragEnd={onSnippetDragEnd}
+                  className={cn(
+                    'block w-full rounded-3xl border px-5 py-4 text-left transition-colors',
+                    selectedSnippetId === snippet.id
+                      ? 'border-amber-500/70 bg-amber-500/10'
+                      : 'border-zinc-900 bg-zinc-950/80 hover:border-zinc-700 hover:bg-zinc-900',
+                    canDragSnippets && 'cursor-grab active:cursor-grabbing'
+                  )}
+                >
+                  <div className="flex items-start justify-between gap-4">
+                    <div className="min-w-0 flex-1">
+                      <div className="font-mono text-sm font-bold text-amber-400">
+                        {snippet.favorite ? '★ ' : ''}
+                        {formatSnippetTrigger(snippet.trigger)}
+                      </div>
+                      <div className="mt-1 truncate text-base font-semibold text-white">{snippet.name}</div>
+                      <div className="mt-2 text-xs text-zinc-500">
+                        {snippet.categoryPath || 'Sem categoria'} · {snippet.usageCount || 0} usos
+                      </div>
+                    </div>
+                    <ChevronRight className="mt-1 h-4 w-4 shrink-0 text-zinc-600" />
+                  </div>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      </ScrollArea>
+    </div>
+  );
+}
+
+function SnippetEditorPane({
+  draft,
+  categoryLabel,
+  onChangeDraft,
+  onToggleFavorite,
+  onDuplicate,
+  onPreview,
+  onDelete,
+  onSave,
+  onOpenCategoryPicker,
+  onClearCategory,
+}: {
+  draft: SnippetDraft;
+  categoryLabel: string;
+  onChangeDraft: React.Dispatch<React.SetStateAction<SnippetDraft>>;
+  onToggleFavorite: () => void;
+  onDuplicate: () => void;
+  onPreview: () => void;
+  onDelete: () => void;
+  onSave: () => void;
+  onOpenCategoryPicker: () => void;
+  onClearCategory: () => void;
+}) {
+  return (
+    <ScrollArea className="h-full">
+      <div className="mx-auto max-w-6xl px-7 py-7">
+        <div className="flex flex-wrap items-center justify-between gap-4">
+          <h1 className="text-3xl font-black tracking-tight">{draft.id ? 'Editar Snippet' : 'Novo Snippet'}</h1>
+          <div className="flex flex-wrap gap-2">
+            <Button variant={draft.favorite ? 'default' : 'secondary'} size="icon" onClick={onToggleFavorite}>
+              <Star className="h-4 w-4" />
+            </Button>
+            <Button variant="secondary" onClick={onDuplicate} disabled={!draft.id}>
+              <Copy className="h-4 w-4" />
+              Duplicar
+            </Button>
+            <Button variant="secondary" onClick={onPreview}>
+              <Eye className="h-4 w-4" />
+              Preview
+            </Button>
+            <Button variant="destructive" onClick={onDelete} disabled={!draft.id}>
+              <Trash2 className="h-4 w-4" />
+              Remover
+            </Button>
+            <Button onClick={onSave}>
+              <Save className="h-4 w-4" />
+              Salvar
+            </Button>
+          </div>
+        </div>
+
+        <div className="mt-8 space-y-6">
+          <LabeledField label="Gatilho">
+            <div className="space-y-2">
+              <Input
+                value={draft.trigger}
+                onChange={(e) => onChangeDraft((state) => ({ ...state, trigger: e.target.value }))}
+                onBlur={() => onChangeDraft((state) => ({ ...state, trigger: normalizeSnippetTriggerInput(state.trigger) }))}
+                placeholder="meu-comando"
+              />
+              <div className="text-sm text-zinc-500">Digite só o identificador; no uso você expande com <span className="font-mono text-zinc-300">/gatilho</span>.</div>
+            </div>
+          </LabeledField>
+
+          <div className="grid gap-4 lg:grid-cols-[1.2fr_1fr]">
+            <LabeledField label="Categoria">
+              <div className="space-y-2">
+                <button
+                  type="button"
+                  onClick={onOpenCategoryPicker}
+                  className="flex w-full items-center justify-between gap-3 rounded-2xl border border-zinc-800 bg-zinc-950/80 px-4 py-3 text-left transition-colors hover:border-zinc-700 hover:bg-zinc-900"
+                >
+                  <div className="flex min-w-0 items-center gap-3">
+                    <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-zinc-900 text-amber-400">
+                      <Folder className="h-4 w-4" />
+                    </span>
+                    <div className="min-w-0">
+                      <div className="text-xs uppercase tracking-[0.18em] text-zinc-500">Organização</div>
+                      <div className="truncate text-sm font-semibold text-white">{categoryLabel}</div>
+                    </div>
+                  </div>
+                  <ChevronRight className="h-4 w-4 shrink-0 text-zinc-500" />
+                </button>
+                {draft.categoryId ? (
+                  <Button variant="outline" size="sm" onClick={onClearCategory}>
+                    Limpar categoria
+                  </Button>
+                ) : null}
+              </div>
+            </LabeledField>
+            <LabeledField label="Tags">
+              <Input value={draft.tags} onChange={(e) => onChangeDraft((state) => ({ ...state, tags: e.target.value }))} placeholder="email, suporte, vendas" />
+            </LabeledField>
+          </div>
+
+          <LabeledField label="Nome">
+            <Input value={draft.name} onChange={(e) => onChangeDraft((state) => ({ ...state, name: e.target.value }))} placeholder="Nome descritivo do snippet" />
+          </LabeledField>
+
+          <LabeledField label="Ações (Macro)">
+            <MacroActionEditor actions={draft.actions} onChange={(actions) => onChangeDraft((state) => ({ ...state, actions }))} />
+          </LabeledField>
+        </div>
+      </div>
+    </ScrollArea>
+  );
+}
+
 function SidebarCategoryCard({
   category,
   onOpen,
+  isActive = false,
+  itemCount,
   dragHandleProps,
   isSnippetDropTarget = false,
   canAcceptSnippetDrop = false,
@@ -1893,6 +2229,8 @@ function SidebarCategoryCard({
 }: {
   category: Category;
   onOpen: () => void;
+  isActive?: boolean;
+  itemCount?: number;
   dragHandleProps?: React.ButtonHTMLAttributes<HTMLButtonElement>;
   isSnippetDropTarget?: boolean;
   canAcceptSnippetDrop?: boolean;
@@ -1906,10 +2244,12 @@ function SidebarCategoryCard({
       role="button"
       tabIndex={0}
       className={cn(
-        'group rounded-2xl border bg-zinc-950/80 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500/60',
+        'group rounded-2xl border transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500/60',
         isSnippetDropTarget
           ? 'border-amber-500/70 bg-amber-500/10'
-          : 'border-zinc-900 hover:border-zinc-700 hover:bg-zinc-900'
+          : isActive
+            ? 'border-zinc-700 bg-zinc-900'
+            : 'border-zinc-900 bg-zinc-950/80 hover:border-zinc-700 hover:bg-zinc-900'
       )}
       onClick={onOpen}
       onKeyDown={(event) => {
@@ -1942,6 +2282,9 @@ function SidebarCategoryCard({
         </span>
         <div className="min-w-0 flex-1">
           <div className="truncate text-sm font-semibold">{category.name}</div>
+          <div className="mt-0.5 text-xs text-zinc-500">
+            {itemCount === 1 ? '1 snippet' : `${itemCount ?? 0} snippets`}
+          </div>
         </div>
         {dragHandleProps ? (
           <button
@@ -1963,133 +2306,510 @@ function SidebarCategoryCard({
   );
 }
 
-function SortableSidebarCategory({
-  category,
-  onOpen,
-  isSnippetDropTarget,
-  canAcceptSnippetDrop,
-  onSnippetDragEnter,
-  onSnippetDragLeave,
-  onSnippetDrop,
+function CategoryPickerDialog({
+  open,
+  categories,
+  expandedIds,
+  selectedCategoryId,
+  onOpenChange,
+  onToggleExpanded,
+  onSelectCategory,
+  onClearCategory,
+  onOpenManager,
 }: {
-  category: Category;
-  onOpen: () => void;
-  isSnippetDropTarget?: boolean;
-  canAcceptSnippetDrop?: boolean;
-  onSnippetDragEnter?: () => void;
-  onSnippetDragLeave?: () => void;
-  onSnippetDrop?: () => void;
+  open: boolean;
+  categories: CategoryTreeNode[];
+  expandedIds: Set<string>;
+  selectedCategoryId: string | null;
+  onOpenChange: (open: boolean) => void;
+  onToggleExpanded: (categoryId: string) => void;
+  onSelectCategory: (categoryId: string) => void;
+  onClearCategory: () => void;
+  onOpenManager: () => void;
 }) {
-  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: category.id });
-  const style = { transform: CSS.Transform.toString(transform), transition };
   return (
-    <div ref={setNodeRef} style={style} className={cn(isDragging && 'opacity-50')}>
-      <SidebarCategoryCard
-        category={category}
-        onOpen={onOpen}
-        dragHandleProps={{ ...attributes, ...listeners }}
-        isSnippetDropTarget={isSnippetDropTarget}
-        canAcceptSnippetDrop={canAcceptSnippetDrop}
-        onSnippetDragEnter={onSnippetDragEnter}
-        onSnippetDragLeave={onSnippetDragLeave}
-        onSnippetDrop={onSnippetDrop}
-      />
-    </div>
-  );
-}
-
-function CategoryDialogRow({
-  category,
-  onOpen,
-  onSelect,
-  onRename,
-  onIcon,
-  onDelete,
-  canSelect,
-  dragHandleProps,
-}: {
-  category: Category;
-  onOpen: () => void;
-  onSelect: () => void;
-  onRename: () => void;
-  onIcon: () => void;
-  onDelete: () => void;
-  canSelect: boolean;
-  dragHandleProps?: React.ButtonHTMLAttributes<HTMLButtonElement>;
-}) {
-  const Icon = category.icon.kind === 'emoji' ? null : getLucideIcon(category.icon.value);
-  return (
-    <div className="flex items-center gap-3 rounded-2xl border border-zinc-800 bg-zinc-900/60 p-4">
-      <span className="grid h-10 w-10 place-items-center rounded-xl bg-zinc-950 text-amber-400">
-        {category.icon.kind === 'emoji' ? <span className="text-lg">{category.icon.value}</span> : <Icon className="h-4 w-4" />}
-      </span>
-      <div className="min-w-0 flex-1">
-        <div className="truncate font-semibold">{category.name}</div>
-      </div>
-      <div className="flex flex-wrap gap-2">
-        {dragHandleProps ? (
-          <button
-            type="button"
-            aria-label={`Reordenar ${category.name}`}
-            className="drag-handle rounded-xl border border-zinc-800 bg-zinc-950 p-2 text-zinc-400 transition-colors hover:border-zinc-700 hover:text-zinc-200"
-            {...dragHandleProps}
-          >
-            <GripVertical className="h-4 w-4" />
-          </button>
-        ) : null}
-        <Button variant="secondary" size="sm" onClick={onOpen}>Abrir</Button>
-        {canSelect ? <Button variant="outline" size="sm" onClick={onSelect}>Selecionar</Button> : null}
-        <Button variant="outline" size="sm" onClick={onRename}>Renomear</Button>
-        <Button variant="outline" size="sm" onClick={onIcon}>Ícone</Button>
-        <Button variant="destructive" size="sm" onClick={onDelete}>Excluir</Button>
-      </div>
-    </div>
-  );
-}
-
-function SortableCategoryDialogRow(props: React.ComponentProps<typeof CategoryDialogRow> & { category: Category }) {
-  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: props.category.id });
-  const style = { transform: CSS.Transform.toString(transform), transition };
-  return (
-    <div ref={setNodeRef} style={style} className={cn(isDragging && 'opacity-50')}>
-      <CategoryDialogRow {...props} dragHandleProps={{ ...attributes, ...listeners }} />
-    </div>
-  );
-}
-
-function PromptDialog({ state, onClose }: { state: PromptState | null; onClose: () => void }) {
-  const [value, setValue] = useState(state?.defaultValue ?? '');
-
-  useEffect(() => {
-    setValue(state?.defaultValue ?? '');
-  }, [state]);
-
-  return (
-    <Dialog open={Boolean(state?.open)} onOpenChange={(open) => !open && onClose()}>
-      <DialogContent className="w-[min(92vw,520px)]">
-        <DialogHeader>
-          <DialogTitle>{state?.title}</DialogTitle>
-          {state?.description ? <DialogDescription>{state.description}</DialogDescription> : null}
-        </DialogHeader>
-        <div className="px-6 py-5">
-          <LabeledField label={state?.label || 'Valor'}>
-            <Input value={value} onChange={(e) => setValue(e.target.value)} />
-          </LabeledField>
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="w-[min(92vw,640px)] max-w-[640px] overflow-hidden p-0">
+        <div className="flex max-h-[85vh] min-h-0 flex-col">
+          <DialogHeader className="border-b border-zinc-900 px-6 py-5">
+            <DialogTitle>Escolher categoria</DialogTitle>
+            <DialogDescription>Selecione onde este snippet será organizado.</DialogDescription>
+          </DialogHeader>
+          <div className="min-h-0 flex-1 overflow-y-auto px-3 py-3">
+            {categories.length ? (
+              <CategoryTree
+                nodes={categories}
+                expandedIds={expandedIds}
+                selectedCategoryId={selectedCategoryId}
+                onToggleExpanded={onToggleExpanded}
+                onSelectCategory={onSelectCategory}
+              />
+            ) : (
+              <div className="rounded-2xl border border-dashed border-zinc-800 bg-zinc-950/70 px-4 py-8 text-center text-sm text-zinc-500">
+                Nenhuma categoria cadastrada ainda.
+              </div>
+            )}
+          </div>
+          <DialogFooter className="mt-0">
+            <Button variant="secondary" onClick={onOpenManager}>Gerenciar categorias</Button>
+            <Button variant="outline" onClick={onClearCategory}>Sem categoria</Button>
+            <Button variant="secondary" onClick={() => onOpenChange(false)}>Cancelar</Button>
+          </DialogFooter>
         </div>
-        <DialogFooter>
-          <Button variant="secondary" onClick={onClose}>Cancelar</Button>
-          <Button
-            onClick={async () => {
-              if (!state) return;
-              await state.onSubmit(value.trim());
-              onClose();
-            }}
-          >
-            Salvar
-          </Button>
-        </DialogFooter>
       </DialogContent>
     </Dialog>
+  );
+}
+
+function CategoryManagerDialog({
+  open,
+  categories,
+  tree,
+  expandedIds,
+  selectedCategoryId,
+  categoryDraft,
+  categoryCounts,
+  sensors,
+  getCategoryPath,
+  getSortModeForParent,
+  onOpenChange,
+  onToggleExpanded,
+  onSelectCategory,
+  onCreateRoot,
+  onCreateChild,
+  onDeleteSelected,
+  onSaveDraft,
+  onChangeDraft,
+  onChooseIcon,
+  onReorder,
+  onSetSortMode,
+}: {
+  open: boolean;
+  categories: Category[];
+  tree: CategoryTreeNode[];
+  expandedIds: Set<string>;
+  selectedCategoryId: string | null;
+  categoryDraft: CategoryDraftState | null;
+  categoryCounts: Map<string, number>;
+  sensors: ReturnType<typeof useSensors>;
+  getCategoryPath: (id: string | null) => string;
+  getSortModeForParent: (parentId: string | null) => 'manual' | 'alphabetical';
+  onOpenChange: (open: boolean) => void;
+  onToggleExpanded: (categoryId: string) => void;
+  onSelectCategory: (categoryId: string) => void;
+  onCreateRoot: () => void;
+  onCreateChild: () => void;
+  onDeleteSelected: () => void;
+  onSaveDraft: () => void;
+  onChangeDraft: React.Dispatch<React.SetStateAction<CategoryDraftState | null>>;
+  onChooseIcon: (initial: CategoryIcon) => Promise<CategoryIcon | null>;
+  onReorder: (event: DragEndEvent) => void;
+  onSetSortMode: (sortMode: 'manual' | 'alphabetical', parentId: string | null) => void;
+}) {
+  const selectedCategory = categories.find((category) => category.id === selectedCategoryId) ?? null;
+  const selectedParentId = selectedCategory?.parentId ?? null;
+  const selectedLevelParentId = categoryDraft?.mode === 'create-root' ? null : selectedParentId;
+  const levelSortMode = getSortModeForParent(selectedLevelParentId);
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="w-[min(96vw,1100px)] max-w-[1100px] overflow-hidden p-0">
+        <div className="flex max-h-[88vh] min-h-0 flex-col">
+          <DialogHeader className="border-b border-zinc-900 px-6 py-5">
+            <DialogTitle>Gerenciar categorias</DialogTitle>
+            <DialogDescription>Edite a estrutura completa da biblioteca sem navegar por telas separadas.</DialogDescription>
+          </DialogHeader>
+          <div className="grid min-h-0 flex-1 grid-cols-1 md:grid-cols-[320px_minmax(0,1fr)]">
+            <div className="min-h-0 border-b border-zinc-900 md:border-b-0 md:border-r">
+              <div className="flex items-center justify-between gap-3 border-b border-zinc-900 px-4 py-4">
+                <div>
+                  <div className="text-xs uppercase tracking-[0.18em] text-zinc-500">Estrutura</div>
+                  <div className="text-sm font-semibold text-white">{selectedCategory ? getCategoryPath(selectedCategory.id) : 'Raiz'}</div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button variant="outline" size="sm">
+                        <ArrowUpDown className="h-4 w-4" />
+                        Ordenar
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end" className="w-44">
+                      <DropdownMenuLabel>Ordenação do nível</DropdownMenuLabel>
+                      <DropdownMenuRadioGroup
+                        value={levelSortMode}
+                        onValueChange={(value) => onSetSortMode(value as 'manual' | 'alphabetical', selectedLevelParentId)}
+                      >
+                        <DropdownMenuRadioItem value="manual">Manual</DropdownMenuRadioItem>
+                        <DropdownMenuRadioItem value="alphabetical">Alfabética</DropdownMenuRadioItem>
+                      </DropdownMenuRadioGroup>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                  <Button variant="secondary" size="sm" onClick={onCreateRoot}>
+                    <FolderPlus className="h-4 w-4" />
+                    Nova
+                  </Button>
+                </div>
+              </div>
+              <div className="min-h-0 overflow-y-auto px-3 py-3">
+                <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={onReorder}>
+                  {tree.length ? (
+                    <CategoryTree
+                      nodes={tree}
+                      expandedIds={expandedIds}
+                      selectedCategoryId={selectedCategoryId}
+                      onToggleExpanded={onToggleExpanded}
+                      onSelectCategory={onSelectCategory}
+                      draggableParentsMode={getSortModeForParent}
+                      categoryCounts={categoryCounts}
+                    />
+                  ) : (
+                    <div className="rounded-2xl border border-dashed border-zinc-800 bg-zinc-950/70 px-4 py-8 text-center text-sm text-zinc-500">
+                      Nenhuma categoria cadastrada ainda.
+                    </div>
+                  )}
+                </DndContext>
+              </div>
+            </div>
+
+            <div className="min-h-0 overflow-y-auto px-6 py-6">
+              <CategoryDetailPane
+                category={selectedCategory}
+                categoryDraft={categoryDraft}
+                categoryOptions={categories
+                  .filter((category) => category.id !== categoryDraft?.id && !getDescendantIds(categoryDraft?.id ?? '', categories).includes(category.id))
+                  .map((category) => ({ id: category.id, path: getCategoryPath(category.id) }))}
+                categoryCounts={categoryCounts}
+                onCreateChild={onCreateChild}
+                onDelete={onDeleteSelected}
+                onSave={onSaveDraft}
+                onChangeDraft={onChangeDraft}
+                onChooseIcon={onChooseIcon}
+              />
+            </div>
+          </div>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function CategoryTree({
+  nodes,
+  expandedIds,
+  selectedCategoryId,
+  onToggleExpanded,
+  onSelectCategory,
+  draggableParentsMode,
+  categoryCounts,
+}: {
+  nodes: CategoryTreeNode[];
+  expandedIds: Set<string>;
+  selectedCategoryId: string | null;
+  onToggleExpanded: (categoryId: string) => void;
+  onSelectCategory: (categoryId: string) => void;
+  draggableParentsMode?: (parentId: string | null) => 'manual' | 'alphabetical';
+  categoryCounts?: Map<string, number>;
+}) {
+  if (!nodes.length) return null;
+  const parentId = nodes[0]?.category.parentId ?? null;
+  const isDraggable = draggableParentsMode ? draggableParentsMode(parentId) === 'manual' : false;
+
+  const content = (
+    <div className="space-y-1">
+      {nodes.map((node) => (
+        <CategoryTreeItem
+          key={node.category.id}
+          node={node}
+          depth={0}
+          expandedIds={expandedIds}
+          selectedCategoryId={selectedCategoryId}
+          onToggleExpanded={onToggleExpanded}
+          onSelectCategory={onSelectCategory}
+          draggableParentsMode={draggableParentsMode}
+          categoryCounts={categoryCounts}
+          isDraggable={isDraggable}
+        />
+      ))}
+    </div>
+  );
+
+  return isDraggable ? <SortableContext items={nodes.map((node) => node.category.id)} strategy={verticalListSortingStrategy}>{content}</SortableContext> : content;
+}
+
+function CategoryTreeItem({
+  node,
+  depth,
+  expandedIds,
+  selectedCategoryId,
+  onToggleExpanded,
+  onSelectCategory,
+  draggableParentsMode,
+  categoryCounts,
+  isDraggable,
+}: {
+  node: CategoryTreeNode;
+  depth: number;
+  expandedIds: Set<string>;
+  selectedCategoryId: string | null;
+  onToggleExpanded: (categoryId: string) => void;
+  onSelectCategory: (categoryId: string) => void;
+  draggableParentsMode?: (parentId: string | null) => 'manual' | 'alphabetical';
+  categoryCounts?: Map<string, number>;
+  isDraggable: boolean;
+}) {
+  const hasChildren = node.children.length > 0;
+  const isExpanded = expandedIds.has(node.category.id);
+  const Icon = node.category.icon.kind === 'emoji' ? null : getLucideIcon(node.category.icon.value);
+  const sortable = useSortable({ id: node.category.id, disabled: !isDraggable });
+  const style = isDraggable
+    ? { transform: CSS.Transform.toString(sortable.transform), transition: sortable.transition }
+    : undefined;
+
+  return (
+    <div ref={sortable.setNodeRef} style={style} className={cn(isDraggable && sortable.isDragging && 'opacity-60')}>
+      <div
+        className={cn(
+          'rounded-2xl border transition-colors',
+          selectedCategoryId === node.category.id
+            ? 'border-amber-500/60 bg-amber-500/10'
+            : 'border-transparent hover:border-zinc-800 hover:bg-zinc-900/70'
+        )}
+      >
+        <div className="flex items-center gap-2 px-3 py-2" style={{ paddingLeft: 12 + depth * 18 }}>
+          <button
+            type="button"
+            className="grid h-7 w-7 shrink-0 place-items-center rounded-lg text-zinc-500 hover:bg-zinc-800 hover:text-zinc-200"
+            onClick={() => hasChildren && onToggleExpanded(node.category.id)}
+            aria-label={hasChildren ? (isExpanded ? 'Recolher categoria' : 'Expandir categoria') : 'Sem subcategorias'}
+          >
+            {hasChildren ? (
+              isExpanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />
+            ) : (
+              <span className="h-4 w-4" />
+            )}
+          </button>
+          <button
+            type="button"
+            className="flex min-w-0 flex-1 items-center gap-3 text-left"
+            onClick={() => onSelectCategory(node.category.id)}
+          >
+            <span className="grid h-8 w-8 shrink-0 place-items-center rounded-xl bg-zinc-950 text-amber-400">
+              {node.category.icon.kind === 'emoji' ? <span className="text-base">{node.category.icon.value}</span> : <Icon className="h-4 w-4" />}
+            </span>
+            <div className="min-w-0 flex-1">
+              <div className="truncate text-sm font-medium text-white">{node.category.name}</div>
+              {categoryCounts ? <div className="text-xs text-zinc-500">{categoryCounts.get(node.category.id) ?? 0} snippets</div> : null}
+            </div>
+          </button>
+          {isDraggable ? (
+            <button
+              type="button"
+              className="rounded-lg p-1 text-zinc-500 hover:bg-zinc-800 hover:text-zinc-200"
+              aria-label={`Reordenar ${node.category.name}`}
+              {...sortable.attributes}
+              {...sortable.listeners}
+            >
+              <GripVertical className="h-4 w-4" />
+            </button>
+          ) : null}
+        </div>
+      </div>
+
+      {hasChildren && isExpanded ? (
+        <div className="mt-1">
+          <CategoryTreeLevel
+            nodes={node.children}
+            depth={depth + 1}
+            expandedIds={expandedIds}
+            selectedCategoryId={selectedCategoryId}
+            onToggleExpanded={onToggleExpanded}
+            onSelectCategory={onSelectCategory}
+            draggableParentsMode={draggableParentsMode}
+            categoryCounts={categoryCounts}
+          />
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function CategoryTreeLevel({
+  nodes,
+  depth,
+  expandedIds,
+  selectedCategoryId,
+  onToggleExpanded,
+  onSelectCategory,
+  draggableParentsMode,
+  categoryCounts,
+}: {
+  nodes: CategoryTreeNode[];
+  depth: number;
+  expandedIds: Set<string>;
+  selectedCategoryId: string | null;
+  onToggleExpanded: (categoryId: string) => void;
+  onSelectCategory: (categoryId: string) => void;
+  draggableParentsMode?: (parentId: string | null) => 'manual' | 'alphabetical';
+  categoryCounts?: Map<string, number>;
+}) {
+  const parentId = nodes[0]?.category.parentId ?? null;
+  const isDraggable = draggableParentsMode ? draggableParentsMode(parentId) === 'manual' : false;
+  const content = (
+    <div className="space-y-1">
+      {nodes.map((node) => (
+        <CategoryTreeItem
+          key={node.category.id}
+          node={node}
+          depth={depth}
+          expandedIds={expandedIds}
+          selectedCategoryId={selectedCategoryId}
+          onToggleExpanded={onToggleExpanded}
+          onSelectCategory={onSelectCategory}
+          draggableParentsMode={draggableParentsMode}
+          categoryCounts={categoryCounts}
+          isDraggable={isDraggable}
+        />
+      ))}
+    </div>
+  );
+  return isDraggable ? <SortableContext items={nodes.map((node) => node.category.id)} strategy={verticalListSortingStrategy}>{content}</SortableContext> : content;
+}
+
+function CategoryDetailPane({
+  category,
+  categoryDraft,
+  categoryOptions,
+  categoryCounts,
+  onCreateChild,
+  onDelete,
+  onSave,
+  onChangeDraft,
+  onChooseIcon,
+}: {
+  category: Category | null;
+  categoryDraft: CategoryDraftState | null;
+  categoryOptions: Array<{ id: string; path: string }>;
+  categoryCounts: Map<string, number>;
+  onCreateChild: () => void;
+  onDelete: () => void;
+  onSave: () => void;
+  onChangeDraft: React.Dispatch<React.SetStateAction<CategoryDraftState | null>>;
+  onChooseIcon: (initial: CategoryIcon) => Promise<CategoryIcon | null>;
+}) {
+  if (!categoryDraft) {
+    return (
+      <div className="grid min-h-[320px] place-items-center rounded-3xl border border-dashed border-zinc-800 bg-zinc-950/60 p-10 text-center text-zinc-500">
+        <div>
+          <FolderCog className="mx-auto mb-3 h-8 w-8 opacity-50" />
+          <div className="text-lg font-semibold text-zinc-300">Selecione uma categoria na árvore para editar</div>
+          <div className="mt-2 text-sm">Ou crie uma nova categoria raiz para começar a organizar a biblioteca.</div>
+        </div>
+      </div>
+    );
+  }
+
+  const iconLabel = categoryDraft.icon.kind === 'emoji' ? categoryDraft.icon.value : categoryDraft.icon.value;
+  const Icon = categoryDraft.icon.kind === 'emoji' ? null : getLucideIcon(categoryDraft.icon.value);
+
+  return (
+    <div className="space-y-6">
+      <div className="rounded-3xl border border-zinc-900 bg-zinc-950/70 p-6">
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div>
+            <div className="text-xs uppercase tracking-[0.18em] text-zinc-500">
+              {categoryDraft.mode === 'edit' ? 'Editar categoria' : categoryDraft.mode === 'create-child' ? 'Nova subcategoria' : 'Nova categoria raiz'}
+            </div>
+            <div className="mt-1 text-2xl font-black tracking-tight text-white">
+              {categoryDraft.mode === 'edit' ? categoryDraft.name || 'Categoria sem nome' : 'Nova categoria'}
+            </div>
+            {category ? (
+              <div className="mt-2 text-sm text-zinc-400">
+                {categoryCounts.get(category.id) ?? 0} snippets vinculados
+              </div>
+            ) : null}
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {category ? (
+              <Button variant="secondary" onClick={onCreateChild}>
+                <FolderPlus className="h-4 w-4" />
+                Nova subcategoria
+              </Button>
+            ) : null}
+            {categoryDraft.mode === 'edit' ? (
+              <Button variant="destructive" onClick={onDelete}>
+                <Trash2 className="h-4 w-4" />
+                Excluir
+              </Button>
+            ) : null}
+            <Button onClick={onSave}>
+              <Save className="h-4 w-4" />
+              Salvar
+            </Button>
+          </div>
+        </div>
+      </div>
+
+      <div className="grid gap-5 rounded-3xl border border-zinc-900 bg-zinc-950/70 p-6">
+        <LabeledField label="Nome">
+          <Input
+            value={categoryDraft.name}
+            onChange={(e) => onChangeDraft((current) => (current ? { ...current, name: e.target.value } : current))}
+            placeholder="Nome da categoria"
+          />
+        </LabeledField>
+
+        <LabeledField label="Pasta Pai">
+          <Select
+            value={categoryDraft.parentId ?? '__root__'}
+            onValueChange={(value) =>
+              onChangeDraft((current) =>
+                current
+                  ? {
+                      ...current,
+                      parentId: value === '__root__' ? null : value,
+                    }
+                  : current
+              )
+            }
+          >
+            <SelectTrigger className="w-full">
+              <SelectValue placeholder="Raiz" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="__root__">Raiz</SelectItem>
+              {categoryOptions.map((option) => (
+                <SelectItem key={option.id} value={option.id}>
+                  {option.path}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </LabeledField>
+
+        <LabeledField label="Ícone">
+          <div className="flex items-center gap-3 rounded-2xl border border-zinc-800 bg-zinc-950 px-4 py-3">
+            <div className="grid h-12 w-12 place-items-center rounded-2xl bg-zinc-900 text-amber-400">
+              {categoryDraft.icon.kind === 'emoji' ? <span className="text-xl">{categoryDraft.icon.value}</span> : <Icon className="h-5 w-5" />}
+            </div>
+            <div className="min-w-0 flex-1">
+              <div className="truncate text-sm font-medium text-zinc-200">{iconLabel}</div>
+              <div className="text-xs text-zinc-500">Escolha um ícone Lucide ou um emoji simples.</div>
+            </div>
+            <Button
+              variant="secondary"
+              onClick={async () => {
+                const icon = await onChooseIcon(categoryDraft.icon);
+                if (!icon) return;
+                onChangeDraft((current) => (current ? { ...current, icon } : current));
+              }}
+            >
+              Escolher ícone
+            </Button>
+          </div>
+        </LabeledField>
+      </div>
+    </div>
   );
 }
 
