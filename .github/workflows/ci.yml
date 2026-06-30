@@ -5,18 +5,26 @@ on:
   pull_request:
 
 jobs:
-  check:
-    if: ${{ matrix.enabled }}
-    strategy:
-      matrix:
-        include:
-          - os: windows-latest
-            enabled: true
-          - os: ubuntu-latest
-            enabled: false
-          - os: macos-latest
-            enabled: false
-    runs-on: ${{ matrix.os }}
+  check-windows:
+    name: Check (Windows)
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - run: bun install --frozen-lockfile
+      - run: bun run check
+      - run: bun run test
+      - run: cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
+
+  check-linux:
+    name: Check (Linux) - Disabled
+    if: ${{ false }}
+    runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v4
@@ -26,10 +34,26 @@ jobs:
           components: rustfmt
 
       - name: Install Linux dependencies
-        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libgtk-3-dev libudev-dev
+
+      - run: bun install --frozen-lockfile
+      - run: bun run check
+      - run: bun run test
+      - run: cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
+
+  check-macos:
+    name: Check (macOS) - Disabled
+    if: ${{ false }}
+    runs-on: macos-latest
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
 
       - run: bun install --frozen-lockfile
       - run: bun run check

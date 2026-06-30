@@ -221,13 +221,22 @@
       );
     } catch (err) {
       console.error('Failed to check for updates:', err);
+      const message = err instanceof Error ? err.message : String(err);
+      const isPrivateReleaseApi = message.includes('status 404');
       latestReleaseUrl = GITHUB_RELEASES_PAGE;
       setUpdateStatus(
-        'Não foi possível verificar atualizações',
-        'Falha ao consultar o GitHub Releases. Você pode tentar novamente em alguns instantes.'
+        isPrivateReleaseApi ? 'Verificação automática indisponível' : 'Não foi possível verificar atualizações',
+        isPrivateReleaseApi
+          ? 'O repositório de releases está privado, então o app não consegue consultar a última versão pela API pública do GitHub. Abra a página de releases no navegador se você tiver acesso.'
+          : 'Falha ao consultar o GitHub Releases. Você pode tentar novamente em alguns instantes.'
       );
       if (!silent) {
-        showToast('Não foi possível verificar atualizações agora.', 'error');
+        showToast(
+          isPrivateReleaseApi
+            ? 'Verificação automática indisponível para releases privadas.'
+            : 'Não foi possível verificar atualizações agora.',
+          'error'
+        );
       }
     }
   }

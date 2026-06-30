@@ -2,6 +2,21 @@
 
 Este projeto segue SemVer e mantem um changelog unico em ordem da release mais recente para a mais antiga.
 
+## [v0.1.1] - 2026-06-30
+
+### Added
+
+- Workflow dedicado de release no GitHub Actions para gerar e anexar os binarios Windows diretamente nas tags `v*`.
+
+### Changed
+
+- Pipeline de CI reorganizada para manter Windows ativo e preservar os jobs de Linux e macOS no repositório, mas desativados de forma compativel com o GitHub Actions.
+
+### Fixed
+
+- Publicacao de releases ajustada para evitar tags sem assets `.msi` e `.exe` no GitHub Releases.
+- Verificacao de atualizacao agora explica corretamente quando a API publica do GitHub nao consegue acessar releases de um repositorio privado, em vez de exibir apenas uma falha generica.
+
 ## [v0.1.0] - 2026-06-30
 
 ### Added

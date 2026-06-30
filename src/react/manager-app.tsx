@@ -666,13 +666,17 @@ export function ManagerApp() {
       });
     } catch (error) {
       console.error(error);
+      const message = error instanceof Error ? error.message : String(error);
+      const isPrivateReleaseApi = message.includes('status 404');
       setUpdateStatus({
-        title: 'Não foi possível verificar atualizações',
-        description: 'Falha ao consultar o GitHub Releases. Tente novamente em alguns instantes.',
+        title: isPrivateReleaseApi ? 'Verificação automática indisponível' : 'Não foi possível verificar atualizações',
+        description: isPrivateReleaseApi
+          ? 'O repositório de releases está privado, então o app não consegue consultar a última versão pela API pública do GitHub. Abra a página de releases no navegador se você tiver acesso.'
+          : 'Falha ao consultar o GitHub Releases. Tente novamente em alguns instantes.',
         latestUrl: 'https://github.com/dougkusanagi/meus-snippets-antigravity/releases',
-        canDownload: false,
+        canDownload: isPrivateReleaseApi,
       });
-      if (!silent) toast.error('Não foi possível verificar atualizações.');
+      if (!silent) toast.error(isPrivateReleaseApi ? 'Verificação automática indisponível para releases privadas.' : 'Não foi possível verificar atualizações.');
     }
   }
 
