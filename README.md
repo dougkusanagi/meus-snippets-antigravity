@@ -101,19 +101,22 @@ Os snippets ficam no diretorio de dados da aplicacao, em `snippets.json`.
 
 ## Roadmap
 
-### TODO: expansao automatica por gatilho
+### Expansao automatica por gatilho
 
 O produto atual e intencionalmente **Picker-first**: o usuario abre o picker, busca um
 snippet e o executa.
 
-Ainda falta implementar a expansao automatica, por exemplo substituir `/email` enquanto
-o usuario digita em qualquer aplicativo. Essa funcionalidade exige uma implementacao e
-uma estrategia de permissoes especificas para cada plataforma:
+A expansao automatica com gatilhos iniciados por `/` agora funciona no Windows, por exemplo
+substituindo `/email` enquanto o usuario digita em qualquer aplicativo. A primeira versao
+usa um listener global de teclado no Windows e evita expandir dentro do proprio manager.
+
+Ainda faltam as implementacoes equivalentes para as outras plataformas, cada uma com sua
+estrategia de permissoes e captura de eventos:
 
 - Windows: hooks globais de teclado.
 - macOS: Event Taps e Acessibilidade.
 - Linux X11: captura global de eventos.
 - Linux Wayland: integracao por compositor/portal, sem assumir que um hook global estara disponivel.
 
-Essa etapa deve ser desenvolvida separadamente para nao comprometer a confiabilidade do
-fluxo Picker-first atual.
+Snippets que exigem preenchimento manual de variaveis continuam dependentes do picker para
+evitar expansoes incompletas.

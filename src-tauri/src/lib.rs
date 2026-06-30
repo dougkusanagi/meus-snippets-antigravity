@@ -1,6 +1,7 @@
 mod commands;
 mod macro_engine;
 mod snippet_store;
+mod text_expander;
 mod tray;
 
 use snippet_store::SnippetStore;
@@ -92,6 +93,8 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_clipboard_manager::init())
+        .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(|app, _shortcut, event| {
@@ -201,6 +204,9 @@ pub fn run() {
 
             // Setup system tray
             tray::setup_tray(app.handle()).expect("Failed to setup system tray");
+
+            // Start inline text expansion listener when supported by the platform.
+            text_expander::start(app.handle().clone());
 
             // Load custom global shortcut on startup and register it
             #[cfg(not(any(target_os = "android", target_os = "ios")))]

@@ -1,4 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
+import { relaunch } from '@tauri-apps/plugin-process';
+import { check, type Update as AppUpdate } from '@tauri-apps/plugin-updater';
 import {
   closestCenter,
   DndContext,
@@ -408,6 +410,14 @@ function formatShortcutForDisplay(shortcut: string, isMac: boolean) {
     .replace(/Super/gi, isMac ? 'Cmd' : 'Win');
 }
 
+function formatBytes(bytes: number) {
+  if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB'];
+  const exponent = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
+  const value = bytes / 1024 ** exponent;
+  return `${value >= 10 || exponent === 0 ? value.toFixed(0) : value.toFixed(1)} ${units[exponent]}`;
+}
+
 function getPhysicalKeyName(code: string) {
   if (code.startsWith('Key')) return code.slice(3).toUpperCase();
   if (code.startsWith('Digit')) return code.slice(5);
@@ -495,8 +505,11 @@ export function ManagerApp() {
   const [updateStatus, setUpdateStatus] = useState({
     title: 'Verificando atualizações...',
     description: 'Comparando a versão instalada com a release mais recente.',
-    latestUrl: '',
-    canDownload: false,
+    latestUrl: 'https://github.com/dougkusanagi/meus-snippets-antigravity/releases',
+    actionLabel: 'Verificar agora',
+    canRunAction: true,
+    isDownloading: false,
+    progressPercent: 0,
   });
   const [permissionInfo, setPermissionInfo] = useState<{
     title: string;
@@ -516,6 +529,7 @@ export function ManagerApp() {
   const [categoryPickerMode, setCategoryPickerMode] = useState<'manage' | 'pick'>('manage');
   const [conflictText, setConflictText] = useState('');
   const shortcutRef = useRef<HTMLButtonElement | null>(null);
+  const pendingUpdateRef = useRef<AppUpdate | null>(null);
 
   const selectedSnippet = useMemo(
     () => snippets.find((snippet) => snippet.id === selectedSnippetId) ?? null,
@@ -639,45 +653,199 @@ export function ManagerApp() {
       ...state,
       title: 'Verificando atualizações...',
       description: 'Comparando a versão instalada com a release mais recente no GitHub.',
+      actionLabel: 'Verificando...',
+      canRunAction: false,
+      isDownloading: false,
+      progressPercent: 0,
     }));
     try {
-      const currentVersion = await coreInvoke<string>('get_app_version');
-      const response = await fetch('https://api.github.com/repos/dougkusanagi/meus-snippets-antigravity/releases/latest', {
-        headers: { Accept: 'application/vnd.github+json' },
-        cache: 'no-store',
-      });
-      if (!response.ok) throw new Error(`GitHub respondeu com status ${response.status}`);
-      const release = await response.json();
-      const latestVersion = String(release.tag_name || release.name || '');
-      const latestUrl = String(release.html_url || 'https://github.com/dougkusanagi/meus-snippets-antigravity/releases');
+      const update = await check();
+      pendingUpdateRef.current = update;
 
-      const normalize = (value: string) => value.replace(/^v/i, '').split('.').map((part) => parseInt(part, 10) || 0);
-      const [a1, a2, a3] = normalize(currentVersion);
-      const [b1, b2, b3] = normalize(latestVersion);
-      const newer = b1 > a1 || (b1 === a1 && (b2 > a2 || (b2 === a2 && b3 > a3)));
+      if (!update) {
+        const currentVersion = await coreInvoke<string>('get_app_version');
+        setUpdateStatus({
+          title: 'Você já está na versão mais recente',
+          description: `Versão instalada ${currentVersion}. Nenhuma atualização nova encontrada agora.`,
+          latestUrl: 'https://github.com/dougkusanagi/meus-snippets-antigravity/releases',
+          actionLabel: 'Verificar agora',
+          canRunAction: true,
+          isDownloading: false,
+          progressPercent: 0,
+        });
+        return;
+      }
 
       setUpdateStatus({
-        latestUrl,
-        canDownload: newer,
-        title: newer ? 'Nova atualização disponível' : 'Você já está na versão mais recente',
-        description: newer
-          ? `Versão atual ${currentVersion}. Nova versão ${latestVersion} disponível no GitHub.`
-          : `Versão instalada ${currentVersion}. Nenhuma atualização nova encontrada agora.`,
+        title: 'Nova atualização disponível',
+        description: `Versão atual ${update.currentVersion}. Nova versão ${update.version} pronta para download em segundo plano.`,
+        latestUrl: 'https://github.com/dougkusanagi/meus-snippets-antigravity/releases',
+        actionLabel: 'Baixar atualização',
+        canRunAction: true,
+        isDownloading: false,
+        progressPercent: 0,
       });
     } catch (error) {
       console.error(error);
-      const message = error instanceof Error ? error.message : String(error);
-      const isPrivateReleaseApi = message.includes('status 404');
+      pendingUpdateRef.current = null;
       setUpdateStatus({
-        title: isPrivateReleaseApi ? 'Verificação automática indisponível' : 'Não foi possível verificar atualizações',
-        description: isPrivateReleaseApi
-          ? 'O repositório de releases está privado, então o app não consegue consultar a última versão pela API pública do GitHub. Abra a página de releases no navegador se você tiver acesso.'
-          : 'Falha ao consultar o GitHub Releases. Tente novamente em alguns instantes.',
+        title: 'Não foi possível verificar atualizações',
+        description: 'Falha ao consultar ou validar a release mais recente. Você pode abrir a página de releases manualmente.',
         latestUrl: 'https://github.com/dougkusanagi/meus-snippets-antigravity/releases',
-        canDownload: isPrivateReleaseApi,
+        actionLabel: 'Abrir releases',
+        canRunAction: true,
+        isDownloading: false,
+        progressPercent: 0,
       });
-      if (!silent) toast.error(isPrivateReleaseApi ? 'Verificação automática indisponível para releases privadas.' : 'Não foi possível verificar atualizações.');
+      if (!silent) toast.error('Não foi possível verificar atualizações.');
     }
+  }
+
+  async function downloadAvailableUpdate() {
+    const update = pendingUpdateRef.current;
+    if (!update) {
+      await checkForUpdates(false);
+      return;
+    }
+
+    let downloadedBytes = 0;
+    let totalBytes = 0;
+
+    setUpdateStatus((state) => ({
+      ...state,
+      title: 'Baixando atualização...',
+      description: `Preparando download da versão ${update.version} em segundo plano.`,
+      actionLabel: 'Baixando...',
+      canRunAction: false,
+      isDownloading: true,
+      progressPercent: 0,
+    }));
+
+    try {
+      await update.download((event) => {
+        if (event.event === 'Started') {
+          totalBytes = event.data.contentLength ?? 0;
+          downloadedBytes = 0;
+          setUpdateStatus((state) => ({
+            ...state,
+            description: totalBytes > 0
+              ? `Baixando a versão ${update.version} em segundo plano.`
+              : `Baixando a versão ${update.version}. O tamanho total não foi informado pela release.`,
+          }));
+          return;
+        }
+
+        if (event.event === 'Progress') {
+          downloadedBytes += event.data.chunkLength;
+          const progressPercent = totalBytes > 0 ? Math.min(100, Math.round((downloadedBytes / totalBytes) * 100)) : 0;
+          setUpdateStatus((state) => ({
+            ...state,
+            description: totalBytes > 0
+              ? `Download em andamento: ${progressPercent}% (${formatBytes(downloadedBytes)} de ${formatBytes(totalBytes)}).`
+              : `Download em andamento: ${formatBytes(downloadedBytes)} recebidos.`,
+            progressPercent,
+          }));
+          return;
+        }
+
+        setUpdateStatus((state) => ({
+          ...state,
+          progressPercent: 100,
+        }));
+      });
+
+      setUpdateStatus({
+        title: 'Atualização pronta para instalar',
+        description: `A versão ${update.version} foi baixada. Você pode fechar o app agora para instalar e reabrir automaticamente na nova versão.`,
+        latestUrl: 'https://github.com/dougkusanagi/meus-snippets-antigravity/releases',
+        actionLabel: 'Atualizar agora',
+        canRunAction: true,
+        isDownloading: false,
+        progressPercent: 100,
+      });
+
+      setConfirmState({
+        open: true,
+        title: 'Instalar atualização agora?',
+        description: `O app será fechado, a versão ${update.version} será instalada e a aplicação será reaberta automaticamente.`,
+        confirmLabel: 'Atualizar agora',
+        onConfirm: async () => {
+          await installDownloadedUpdate();
+        },
+      });
+    } catch (error) {
+      console.error(error);
+      setUpdateStatus({
+        title: 'Falha ao baixar atualização',
+        description: 'Não foi possível concluir o download da nova versão. Você pode tentar novamente ou abrir a página de releases.',
+        latestUrl: 'https://github.com/dougkusanagi/meus-snippets-antigravity/releases',
+        actionLabel: 'Abrir releases',
+        canRunAction: true,
+        isDownloading: false,
+        progressPercent: 0,
+      });
+      toast.error('Falha ao baixar a atualização.');
+    }
+  }
+
+  async function installDownloadedUpdate() {
+    const update = pendingUpdateRef.current;
+    if (!update) return;
+
+    setUpdateStatus((state) => ({
+      ...state,
+      title: 'Instalando atualização...',
+      description: `Fechando o app para instalar a versão ${update.version}.`,
+      actionLabel: 'Instalando...',
+      canRunAction: false,
+      isDownloading: false,
+    }));
+
+    try {
+      await update.install();
+      await relaunch();
+    } catch (error) {
+      console.error(error);
+      setUpdateStatus({
+        title: 'Falha ao instalar atualização',
+        description: 'O download foi concluído, mas a instalação automática falhou. Abra a página de releases para instalar manualmente.',
+        latestUrl: 'https://github.com/dougkusanagi/meus-snippets-antigravity/releases',
+        actionLabel: 'Abrir releases',
+        canRunAction: true,
+        isDownloading: false,
+        progressPercent: 100,
+      });
+      toast.error('Falha ao instalar a atualização.');
+    }
+  }
+
+  async function handleUpdateAction() {
+    if (!updateStatus.canRunAction) return;
+
+    if (updateStatus.actionLabel === 'Baixar atualização') {
+      await downloadAvailableUpdate();
+      return;
+    }
+
+    if (updateStatus.actionLabel === 'Atualizar agora') {
+      setConfirmState({
+        open: true,
+        title: 'Instalar atualização agora?',
+        description: 'O app será fechado para concluir a instalação e será reaberto automaticamente.',
+        confirmLabel: 'Atualizar agora',
+        onConfirm: async () => {
+          await installDownloadedUpdate();
+        },
+      });
+      return;
+    }
+
+    if (updateStatus.actionLabel === 'Abrir releases') {
+      await coreInvoke('open_external_url', { url: updateStatus.latestUrl });
+      return;
+    }
+
+    await checkForUpdates(false);
   }
 
   async function checkPlatform() {
@@ -1441,17 +1609,22 @@ export function ManagerApp() {
                   <div className="rounded-2xl border border-zinc-800 bg-zinc-950/60 p-5">
                     <div className="text-sm font-semibold text-white">{updateStatus.title}</div>
                     <p className="mt-2 text-sm text-zinc-400">{updateStatus.description}</p>
+                    {updateStatus.isDownloading || updateStatus.progressPercent > 0 ? (
+                      <div className="mt-4">
+                        <div className="h-2 overflow-hidden rounded-full bg-zinc-900">
+                          <div
+                            className="h-full rounded-full bg-amber-400 transition-[width] duration-300"
+                            style={{ width: `${updateStatus.progressPercent}%` }}
+                          />
+                        </div>
+                      </div>
+                    ) : null}
                     <div className="mt-4 flex flex-wrap gap-2">
-                      <Button variant="secondary" onClick={() => void checkForUpdates(false)}>
-                        <RefreshCw className="h-4 w-4" />
-                        Verificar agora
+                      <Button variant={updateStatus.actionLabel === 'Atualizar agora' ? 'default' : 'secondary'} disabled={!updateStatus.canRunAction} onClick={() => void handleUpdateAction()}>
+                        {updateStatus.actionLabel === 'Baixar atualização' || updateStatus.actionLabel === 'Abrir releases' ? <Download className="h-4 w-4" /> : null}
+                        {updateStatus.actionLabel === 'Verificar agora' || updateStatus.actionLabel === 'Verificando...' ? <RefreshCw className="h-4 w-4" /> : null}
+                        {updateStatus.actionLabel}
                       </Button>
-                      {updateStatus.canDownload ? (
-                        <Button variant="default" onClick={() => void coreInvoke('open_external_url', { url: updateStatus.latestUrl })}>
-                          <Download className="h-4 w-4" />
-                          Baixar atualização
-                        </Button>
-                      ) : null}
                     </div>
                   </div>
                 </SettingsCard>

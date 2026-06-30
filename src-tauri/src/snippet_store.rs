@@ -310,6 +310,16 @@ impl SnippetStore {
             .cloned())
     }
 
+    pub fn get_by_trigger(&self, trigger: &str) -> Result<Option<Snippet>, String> {
+        Ok(self
+            .snippets
+            .lock()
+            .map_err(|_| "Falha ao bloquear armazenamento".to_string())?
+            .iter()
+            .find(|snippet| snippet.trigger.eq_ignore_ascii_case(trigger))
+            .cloned())
+    }
+
     pub fn add(&self, input: SnippetInput) -> Result<Snippet, String> {
         let input = self.validate_input(input, None)?;
         let now = Utc::now().to_rfc3339();
