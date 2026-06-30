@@ -168,10 +168,7 @@ pub fn set_category_sort_mode(
 }
 
 #[tauri::command]
-pub fn export_backup_to_file(
-    path: String,
-    store: State<'_, SnippetStore>,
-) -> Result<(), String> {
+pub fn export_backup_to_file(path: String, store: State<'_, SnippetStore>) -> Result<(), String> {
     store.export_to_file(PathBuf::from(path).as_path())
 }
 
@@ -185,7 +182,19 @@ pub fn import_backup_from_file(
 }
 
 #[tauri::command]
-pub fn choose_backup_export_path(app: AppHandle, suggested_name: String) -> Result<Option<String>, String> {
+pub fn import_textexpander_csv_from_file(
+    path: String,
+    replace: bool,
+    store: State<'_, SnippetStore>,
+) -> Result<usize, String> {
+    store.import_textexpander_csv_from_file(PathBuf::from(path).as_path(), replace)
+}
+
+#[tauri::command]
+pub fn choose_backup_export_path(
+    app: AppHandle,
+    suggested_name: String,
+) -> Result<Option<String>, String> {
     let file_path = app
         .dialog()
         .file()
@@ -206,6 +215,20 @@ pub fn choose_backup_import_path(app: AppHandle) -> Result<Option<String>, Strin
         .file()
         .add_filter("JSON", &["json"])
         .set_title("Importar backup")
+        .blocking_pick_file();
+
+    Ok(file_path
+        .and_then(|path| path.into_path().ok())
+        .map(|path| path.to_string_lossy().to_string()))
+}
+
+#[tauri::command]
+pub fn choose_textexpander_import_path(app: AppHandle) -> Result<Option<String>, String> {
+    let file_path = app
+        .dialog()
+        .file()
+        .add_filter("CSV", &["csv"])
+        .set_title("Importar snippets do TextExpander")
         .blocking_pick_file();
 
     Ok(file_path

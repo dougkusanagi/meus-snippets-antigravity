@@ -125,6 +125,9 @@ type IconState = {
 type ImportState = {
   open: boolean;
   path: string;
+  source: 'json' | 'textexpander';
+  title: string;
+  description: string;
 };
 
 const shortcutDefaults = {
@@ -529,11 +532,11 @@ export function ManagerApp() {
     const query = search.trim().toLowerCase();
     const list = query
       ? snippets.filter((snippet) =>
-          snippet.trigger.toLowerCase().includes(query) ||
-          snippet.name.toLowerCase().includes(query) ||
-          snippet.categoryPath.toLowerCase().includes(query) ||
-          snippet.tags.some((tag) => tag.toLowerCase().includes(query))
-        )
+        snippet.trigger.toLowerCase().includes(query) ||
+        snippet.name.toLowerCase().includes(query) ||
+        snippet.categoryPath.toLowerCase().includes(query) ||
+        snippet.tags.some((tag) => tag.toLowerCase().includes(query))
+      )
       : snippets.filter((snippet) => (snippet.categoryId || null) === (currentCategoryId || null));
 
     return [...list].sort((a, b) => {
@@ -966,16 +969,42 @@ export function ManagerApp() {
     try {
       const path = await coreInvoke<string | null>('choose_backup_import_path');
       if (!path) return;
-      setImportState({ open: true, path });
+      setImportState({
+        open: true,
+        path,
+        source: 'json',
+        title: 'Importar backup',
+        description: 'Escolha se deseja mesclar o backup com os snippets atuais ou substituir tudo.',
+      });
     } catch (error) {
       toast.error(`Erro ao escolher backup: ${String(error)}`);
+    }
+  }
+
+  async function importTextExpander() {
+    try {
+      const path = await coreInvoke<string | null>('choose_textexpander_import_path');
+      if (!path) return;
+      setImportState({
+        open: true,
+        path,
+        source: 'textexpander',
+        title: 'Importar do TextExpander',
+        description: 'Escolha se deseja mesclar o CSV exportado pelo TextExpander com os snippets atuais ou substituir tudo.',
+      });
+    } catch (error) {
+      toast.error(`Erro ao escolher CSV do TextExpander: ${String(error)}`);
     }
   }
 
   async function finishImport(replace: boolean) {
     if (!importState) return;
     try {
-      const count = await coreInvoke<number>('import_backup_from_file', { path: importState.path, replace });
+      const command =
+        importState.source === 'textexpander'
+          ? 'import_textexpander_csv_from_file'
+          : 'import_backup_from_file';
+      const count = await coreInvoke<number>(command, { path: importState.path, replace });
       toast.success(`${count} snippet(s) importado(s).`);
       setImportState(null);
       setPanel('empty');
@@ -985,6 +1014,21 @@ export function ManagerApp() {
     } catch (error) {
       toast.error(`Erro ao importar: ${String(error)}`);
     }
+  }
+
+  function confirmReplaceImport() {
+    if (!importState) return;
+    const sourceLabel = importState.source === 'textexpander' ? 'o CSV do TextExpander' : 'o backup JSON';
+    setConfirmState({
+      open: true,
+      title: 'Apagar snippets atuais?',
+      description: `Essa ação vai apagar toda a biblioteca atual de snippets e categorias antes de importar ${sourceLabel}. Essa operação substitui tudo.`,
+      confirmLabel: 'Apagar biblioteca e importar',
+      destructive: true,
+      onConfirm: async () => {
+        await finishImport(true);
+      },
+    });
   }
 
   async function saveShortcut(shortcut: string, display: string) {
@@ -1407,6 +1451,10 @@ export function ManagerApp() {
                       <Upload className="h-4 w-4" />
                       Importar JSON
                     </Button>
+                    <Button variant="secondary" onClick={() => void importTextExpander()}>
+                      <Upload className="h-4 w-4" />
+                      Importar TextExpander CSV
+                    </Button>
                   </div>
                 </SettingsCard>
 
@@ -1607,16 +1655,19 @@ export function ManagerApp() {
       <ConfirmDialog state={confirmState} onClose={() => setConfirmState(null)} />
 
       <Dialog open={Boolean(importState?.open)} onOpenChange={(open) => !open && setImportState(null)}>
-        <DialogContent className="w-[min(92vw,540px)]">
+        <DialogContent className="w-[min(96vw,480px)] max-w-[min(96vw,480px)] sm:max-w-[480px]">
           <DialogHeader>
-            <DialogTitle>Importar backup</DialogTitle>
-            <DialogDescription>Escolha se deseja mesclar o backup com os snippets atuais ou substituir tudo.</DialogDescription>
+            <DialogTitle>{importState?.title ?? 'Importar snippets'}</DialogTitle>
+            <DialogDescription>{importState?.description ?? 'Escolha como deseja importar os snippets.'}</DialogDescription>
           </DialogHeader>
-          <DialogFooter>
-            <Button variant="secondary" onClick={() => setImportState(null)}>Cancelar</Button>
-            <Button variant="secondary" onClick={() => void finishImport(false)}>Mesclar</Button>
-            <Button variant="destructive" onClick={() => void finishImport(true)}>Substituir tudo</Button>
-          </DialogFooter>
+          <div className="px-1 text-sm text-zinc-400">
+            Mesclar preserva os snippets atuais. Substituir apaga toda a biblioteca atual antes da importação.
+          </div>
+          <div className="-mx-4 -mb-4 mt-2 flex flex-nowrap items-center justify-end gap-2 overflow-x-auto rounded-b-xl border-t bg-muted/50 p-4">
+            <Button className="shrink-0 whitespace-nowrap" variant="secondary" onClick={() => setImportState(null)}>Cancelar</Button>
+            <Button className="shrink-0 whitespace-nowrap" variant="secondary" onClick={() => void finishImport(false)}>Mesclar</Button>
+            <Button className="shrink-0 whitespace-nowrap" variant="destructive" onClick={confirmReplaceImport}>Apagar biblioteca atual e importar</Button>
+          </div>
         </DialogContent>
       </Dialog>
     </div>
@@ -1673,8 +1724,8 @@ function SidebarCategoryCard({
       onDragOver={
         canAcceptSnippetDrop
           ? (event) => {
-              event.preventDefault();
-            }
+            event.preventDefault();
+          }
           : undefined
       }
       onDragEnter={canAcceptSnippetDrop ? onSnippetDragEnter : undefined}
@@ -1682,9 +1733,9 @@ function SidebarCategoryCard({
       onDrop={
         canAcceptSnippetDrop
           ? (event) => {
-              event.preventDefault();
-              onSnippetDrop?.();
-            }
+            event.preventDefault();
+            onSnippetDrop?.();
+          }
           : undefined
       }
     >
