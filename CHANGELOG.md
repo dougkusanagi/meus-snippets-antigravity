@@ -2,6 +2,13 @@
 
 Este projeto segue SemVer e mantem um changelog unico em ordem da release mais recente para a mais antiga.
 
+## [Unreleased]
+
+### Changed
+
+- Fluxo de build local passou a carregar automaticamente a chave de assinatura do updater de `keys/updater.key` ao executar `bun run tauri build`.
+- Chave de assinatura do updater rotacionada para gerar novas builds locais com artefatos assinados.
+
 ## [v0.1.1] - 2026-06-30
 
 ### Added
@@ -13,6 +20,7 @@ Este projeto segue SemVer e mantem um changelog unico em ordem da release mais r
 
 ### Changed
 
+- Biblioteca do manager foi unificada na sidebar com accordion multi-expansivel, permitindo navegar por categorias e abrir snippets no mesmo painel lateral.
 - Pipeline de CI reorganizada para manter Windows ativo e preservar os jobs de Linux e macOS no repositório, mas desativados de forma compativel com o GitHub Actions.
 - Roadmap e documentacao atualizados para refletir que a primeira etapa da expansao automatica agora existe no Windows, mantendo picker como fallback para snippets com variaveis preenchiveis.
 - Manager reorganizado com sidebar focada em exploracao de pastas, lista de snippets no painel principal e editor separado para escalar melhor com bibliotecas maiores.
@@ -23,6 +31,7 @@ Este projeto segue SemVer e mantem um changelog unico em ordem da release mais r
 
 ### Fixed
 
+- Sidebar do manager agora mantém scroll interno com altura limitada à janela principal, evitando quebrar o layout quando existem muitas categorias ou snippets.
 - Gatilhos iniciados por `/` no Windows agora reiniciam o rastreamento no momento da digitacao, em vez de depender de um estado interno de “inicio de palavra” que ficava incorreto apos selecoes, delecoes ou reposicionamento do cursor.
 - Listener global do Windows agora volta a aceitar um novo gatilho digitado logo apos limpar o estado interno ao sair do manager, encerrar uma expansao ou interromper uma captura, evitando casos em que sequencias como `/1` deixavam de expandir.
 - Limpeza de campos com atalhos de edicao como `Ctrl+A` seguido de `Delete` nao deixa mais o rastreador de gatilhos preso em um contexto invalido no Windows, permitindo novas expansoes imediatamente apos apagar todo o texto.

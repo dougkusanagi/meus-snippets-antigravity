@@ -23,8 +23,11 @@
 ## Changelog e Releases
 
 - O projeto usa um unico arquivo `CHANGELOG.md`, sempre em ordem da release mais recente para a mais antiga.
-- O `CHANGELOG.md` deve ser atualizado **sempre que houver qualquer mudanca relevante no projeto**, incluindo novas funcionalidades, correcao de bugs, ajustes de build, compatibilidade, seguranca, UX ou operacao.
-- Nenhuma alteracao relevante deve ser entregue sem refletir a mudanca no `CHANGELOG.md`.
+- O `CHANGELOG.md` deve refletir **mudancas que vao para release e sejam relevantes para usuario, distribuicao, compatibilidade ou operacao**.
+- Atualize o `CHANGELOG.md` quando a mudanca adicionar funcionalidade, corrigir bug ja presente em versoes distribuidas, alterar UX de forma perceptivel, mudar build, instalacao, compatibilidade, seguranca ou procedimentos operacionais.
+- Nao atualize o `CHANGELOG.md` para ruido interno de desenvolvimento, como refactor sem efeito funcional, limpeza de codigo, testes, comentarios, ajustes locais de sintaxe ou correcao de problema introduzido e resolvido antes de chegar a uma release.
+- Preferir atualizar o `CHANGELOG.md` no PR que sera mergeado em `main` ou no momento de preparar a release, em vez de registrar toda alteracao local imediatamente.
+- Quando for util acumular mudancas antes da versao final, usar uma secao `## [Unreleased]` no topo e promover esse conteudo para `## [vX.Y.Z] - YYYY-MM-DD` ao cortar a release.
 - Cada release deve ter uma secao `## [vX.Y.Z] - YYYY-MM-DD`.
 - Ao preparar uma mudanca, registrar no changelog o que entrou na versao nova usando linguagem objetiva e orientada ao usuario.
 - Dentro de cada release, usar no minimo os blocos `Added`, `Changed` e `Fixed` quando fizer sentido.
@@ -34,7 +37,7 @@
   - `Fixed` para bugs, regressões, falhas de seguranca e correcões operacionais.
 - O changelog deve registrar apenas mudancas relevantes para usuario, distribuicao, compatibilidade ou operacao.
 - Nao criar uma pasta com um arquivo por release, a menos que o usuario peça explicitamente esse formato.
-- Ao concluir uma tarefa que altere comportamento, codigo, build, dependencias ou documentacao operacional, revisar se a entrada correspondente no `CHANGELOG.md` foi adicionada ou ajustada.
+- Ao concluir uma tarefa, revisar se ela precisa aparecer no `CHANGELOG.md` pelos criterios acima antes de editar o arquivo.
 
 ## Versionamento
 

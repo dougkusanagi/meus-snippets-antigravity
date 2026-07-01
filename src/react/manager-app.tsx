@@ -20,7 +20,6 @@ import {
 import { CSS } from '@dnd-kit/utilities';
 import {
   AlertTriangle,
-  ArrowLeft,
   ArrowUpDown,
   ChevronDown,
   ChevronRight,
@@ -76,6 +75,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { toast } from 'sonner';
 import logo from '../assets/guepardosys-snip-logo.png';
 import { Button } from '../components/ui/button';
+import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from '../components/ui/accordion';
 import {
   Dialog,
   DialogContent,
@@ -123,6 +123,11 @@ type CategoryTreeNode = {
   category: Category;
   children: CategoryTreeNode[];
 };
+
+type SidebarSelection =
+  | { type: 'root' }
+  | { type: 'uncategorized' }
+  | { type: 'category'; categoryId: string };
 
 type ConfirmState = {
   open: boolean;
@@ -584,7 +589,9 @@ export function ManagerApp() {
   const [sortOrder, setSortOrder] = useState<SortOrder>('recent');
   const [search, setSearch] = useState('');
   const [currentCategoryId, setCurrentCategoryId] = useState<string | null>(null);
+  const [sidebarSelection, setSidebarSelection] = useState<SidebarSelection>({ type: 'root' });
   const [selectedSnippetId, setSelectedSnippetId] = useState<string | null>(null);
+  const [expandedSidebarItemIds, setExpandedSidebarItemIds] = useState<string[]>([]);
   const [draft, setDraft] = useState<SnippetDraft>(emptyDraft());
   const [draggedSnippetId, setDraggedSnippetId] = useState<string | null>(null);
   const [snippetDropCategoryId, setSnippetDropCategoryId] = useState<string | null>(null);
@@ -626,41 +633,13 @@ export function ManagerApp() {
     [selectedSnippetId, snippets]
   );
 
-  const currentCategory = useMemo(
-    () => categories.find((category) => category.id === currentCategoryId) ?? null,
-    [categories, currentCategoryId]
-  );
-
-  const visibleCategories = useMemo(() => {
-    const filtered = categories.filter((category) => (category.parentId || null) === (currentCategoryId || null));
-    const sortMode = currentCategory?.sortMode ?? 'manual';
-    return [...filtered].sort((a, b) => {
-      if (sortMode === 'alphabetical') return a.name.localeCompare(b.name, 'pt-BR');
-      if (a.sortIndex !== b.sortIndex) return a.sortIndex - b.sortIndex;
-      return a.name.localeCompare(b.name, 'pt-BR');
-    });
-  }, [categories, currentCategory, currentCategoryId, search]);
-
-  const visibleSnippets = useMemo(() => {
-    const query = search.trim().toLowerCase();
-    const normalizedQuery = normalizeSnippetTriggerInput(query).toLowerCase();
-    const list = query
-      ? snippets.filter((snippet) =>
-        snippet.trigger.toLowerCase().includes(query) ||
-        snippet.trigger.toLowerCase().includes(normalizedQuery) ||
-        snippet.name.toLowerCase().includes(query) ||
-        snippet.categoryPath.toLowerCase().includes(query) ||
-        snippet.tags.some((tag) => tag.toLowerCase().includes(query))
-      )
-      : snippets.filter((snippet) => (snippet.categoryId || null) === (currentCategoryId || null));
-
-    return [...list].sort((a, b) => {
+  const sortSnippets = (items: Snippet[]) =>
+    [...items].sort((a, b) => {
       if (a.favorite !== b.favorite) return a.favorite ? -1 : 1;
       if (sortOrder === 'used') return (b.usageCount || 0) - (a.usageCount || 0);
       if (sortOrder === 'name') return a.name.localeCompare(b.name, 'pt-BR');
       return (b.updatedAt || b.createdAt).localeCompare(a.updatedAt || a.createdAt);
     });
-  }, [currentCategoryId, search, snippets, sortOrder]);
 
   const filteredLucideIcons = useMemo(
     () => lucideIconOptions.filter(([name]) => name.toLowerCase().includes(iconSearch.toLowerCase())),
@@ -668,6 +647,27 @@ export function ManagerApp() {
   );
 
   const categoryTree = useMemo(() => buildCategoryTree(categories), [categories]);
+
+  const snippetsByCategoryId = useMemo(() => {
+    const grouped = new Map<string, Snippet[]>();
+    for (const snippet of snippets) {
+      if (!snippet.categoryId) continue;
+      const current = grouped.get(snippet.categoryId) ?? [];
+      current.push(snippet);
+      grouped.set(snippet.categoryId, current);
+    }
+
+    for (const [categoryId, items] of grouped.entries()) {
+      grouped.set(categoryId, sortSnippets(items));
+    }
+
+    return grouped;
+  }, [snippets, sortOrder]);
+
+  const rootSnippets = useMemo(
+    () => sortSnippets(snippets.filter((snippet) => !snippet.categoryId)),
+    [snippets, sortOrder]
+  );
 
   const categorySnippetCounts = useMemo(() => {
     const byParent = new Map<string | null, string[]>();
@@ -701,6 +701,82 @@ export function ManagerApp() {
   }, [categories, snippets]);
 
   const canDragSnippetsToCategory = !search.trim();
+
+  const normalizedSearch = search.trim().toLowerCase();
+  const normalizedTriggerSearch = normalizeSnippetTriggerInput(normalizedSearch).toLowerCase();
+
+  const matchesSnippetSearch = (snippet: Snippet) =>
+    snippet.trigger.toLowerCase().includes(normalizedSearch) ||
+    snippet.trigger.toLowerCase().includes(normalizedTriggerSearch) ||
+    snippet.name.toLowerCase().includes(normalizedSearch) ||
+    snippet.categoryPath.toLowerCase().includes(normalizedSearch) ||
+    snippet.tags.some((tag) => tag.toLowerCase().includes(normalizedSearch));
+
+  const filteredCategoryTree = useMemo(() => {
+    if (!normalizedSearch) return categoryTree;
+
+    const filterNodes = (nodes: CategoryTreeNode[]): CategoryTreeNode[] =>
+      nodes
+        .map((node) => {
+          const childMatches = filterNodes(node.children);
+          const snippetsInCategory = snippetsByCategoryId.get(node.category.id) ?? [];
+          const hasSnippetMatch = snippetsInCategory.some(matchesSnippetSearch);
+          const categoryMatches = node.category.name.toLowerCase().includes(normalizedSearch);
+
+          if (!categoryMatches && !hasSnippetMatch && !childMatches.length) return null;
+          return { ...node, children: childMatches };
+        })
+        .filter(Boolean) as CategoryTreeNode[];
+
+    return filterNodes(categoryTree);
+  }, [categoryTree, normalizedSearch, snippetsByCategoryId]);
+
+  const filteredRootSnippets = useMemo(
+    () => (normalizedSearch ? rootSnippets.filter(matchesSnippetSearch) : rootSnippets),
+    [normalizedSearch, rootSnippets]
+  );
+
+  const displayedSnippetsByCategoryId = useMemo(() => {
+    if (!normalizedSearch) return snippetsByCategoryId;
+
+    const filtered = new Map<string, Snippet[]>();
+    for (const [categoryId, items] of snippetsByCategoryId.entries()) {
+      const nextItems = items.filter(matchesSnippetSearch);
+      if (nextItems.length) filtered.set(categoryId, nextItems);
+    }
+    return filtered;
+  }, [normalizedSearch, snippetsByCategoryId]);
+
+  const autoExpandedSidebarItemIds = useMemo(() => {
+    const ids = new Set<string>();
+
+    if (normalizedSearch) {
+      const walk = (nodes: CategoryTreeNode[]) => {
+        for (const node of nodes) {
+          ids.add(node.category.id);
+          walk(node.children);
+        }
+      };
+      walk(filteredCategoryTree);
+      if (filteredRootSnippets.length) ids.add('__uncategorized__');
+    }
+
+    if (selectedSnippet?.categoryId) {
+      ids.add(selectedSnippet.categoryId);
+      for (const ancestorId of getAncestorIds(selectedSnippet.categoryId, categories)) {
+        ids.add(ancestorId);
+      }
+    } else if (selectedSnippet && !selectedSnippet.categoryId) {
+      ids.add('__uncategorized__');
+    }
+
+    return Array.from(ids);
+  }, [categories, filteredCategoryTree, filteredRootSnippets.length, normalizedSearch, selectedSnippet]);
+
+  const effectiveExpandedSidebarItemIds = useMemo(
+    () => Array.from(new Set([...expandedSidebarItemIds, ...autoExpandedSidebarItemIds])),
+    [autoExpandedSidebarItemIds, expandedSidebarItemIds]
+  );
 
   function getCategoryById(id: string | null) {
     return categories.find((category) => category.id === id) ?? null;
@@ -1045,6 +1121,17 @@ export function ManagerApp() {
   }
 
   function openSnippet(snippet: Snippet) {
+    if (snippet.categoryId) {
+      setCurrentCategoryId(snippet.categoryId);
+      setSidebarSelection({ type: 'category', categoryId: snippet.categoryId });
+      setExpandedSidebarItemIds((current) =>
+        Array.from(new Set([...current, snippet.categoryId, ...getAncestorIds(snippet.categoryId, categories)]))
+      );
+    } else {
+      setCurrentCategoryId(null);
+      setSidebarSelection({ type: 'uncategorized' });
+      setExpandedSidebarItemIds((current) => Array.from(new Set([...current, '__uncategorized__'])));
+    }
     setSelectedSnippetId(snippet.id);
     setDraft(toDraft(snippet));
     setPanel('editor');
@@ -1507,19 +1594,47 @@ export function ManagerApp() {
   });
 
   return (
-    <div className="flex h-full bg-transparent text-zinc-100">
+    <div className="flex h-full min-h-0 overflow-hidden bg-transparent text-zinc-100">
       <CategoryExplorerSidebar
         logo={logo}
         search={search}
         onSearchChange={setSearch}
         sortOrder={sortOrder}
         onSortOrderChange={(value) => setSortOrder(value)}
+        sidebarSelection={sidebarSelection}
         currentCategoryId={currentCategoryId}
-        currentCategoryPath={getCategoryPath(currentCategoryId)}
-        categories={visibleCategories}
+        currentCategoryPath={
+          sidebarSelection.type === 'uncategorized'
+            ? 'Sem categoria'
+            : sidebarSelection.type === 'category'
+              ? getCategoryPath(sidebarSelection.categoryId)
+              : 'Biblioteca'
+        }
+        categories={filteredCategoryTree}
         categoryCounts={categorySnippetCounts}
-        onBack={() => setCurrentCategoryId(currentCategory?.parentId ?? null)}
-        onOpenCategory={(categoryId) => setCurrentCategoryId(categoryId)}
+        rootSnippets={filteredRootSnippets}
+        snippetsByCategoryId={displayedSnippetsByCategoryId}
+        selectedSnippetId={selectedSnippetId}
+        expandedItemIds={effectiveExpandedSidebarItemIds}
+        onExpandedItemIdsChange={setExpandedSidebarItemIds}
+        onSelectRoot={() => {
+          setCurrentCategoryId(null);
+          setSidebarSelection({ type: 'root' });
+        }}
+        onOpenCategory={(categoryId) => {
+          setCurrentCategoryId(categoryId);
+          setSidebarSelection({ type: 'category', categoryId });
+        }}
+        onOpenSnippet={openSnippet}
+        onOpenUncategorized={() => {
+          setCurrentCategoryId(null);
+          setSidebarSelection({ type: 'uncategorized' });
+        }}
+        onSnippetDragStart={(snippetId) => setDraggedSnippetId(snippetId)}
+        onSnippetDragEnd={() => {
+          setDraggedSnippetId(null);
+          setSnippetDropCategoryId(null);
+        }}
         onNewSnippet={openNewSnippet}
         onManageCategories={() => openCategoryManager(currentCategoryId)}
         onOpenSettings={() => {
@@ -1535,7 +1650,7 @@ export function ManagerApp() {
         onSnippetDrop={(categoryId) => void (draggedSnippetId ? moveSnippetToCategory(draggedSnippetId, categoryId) : Promise.resolve())}
       />
 
-      <main className="flex-1 overflow-hidden bg-[#0b0d14]">
+      <main className="flex-1 min-h-0 overflow-hidden bg-[#0b0d14]">
         {permissionInfo.visible ? (
           <div className="border-b border-amber-900/40 bg-amber-950/30 px-6 py-4">
             <div className="flex items-start gap-4">
@@ -1554,23 +1669,8 @@ export function ManagerApp() {
           </div>
         ) : null}
 
-        <div className="grid h-full grid-cols-1 xl:grid-cols-[minmax(340px,420px)_minmax(0,1fr)]">
-          <SnippetListPane
-            search={search}
-            currentCategoryId={currentCategoryId}
-            currentCategoryPath={getCategoryPath(currentCategoryId)}
-            snippets={visibleSnippets}
-            selectedSnippetId={selectedSnippetId}
-            onOpenSnippet={openSnippet}
-            canDragSnippets={canDragSnippetsToCategory}
-            onSnippetDragStart={setDraggedSnippetId}
-            onSnippetDragEnd={() => {
-              setDraggedSnippetId(null);
-              setSnippetDropCategoryId(null);
-            }}
-          />
-
-          <div className="min-h-0 border-t border-zinc-900 xl:border-l xl:border-t-0">
+        <div className="h-full min-h-0">
+          <div className="h-full min-h-0">
             {panel === 'settings' ? (
               <ScrollArea className="h-full">
                 <div className="mx-auto max-w-4xl px-7 py-7">
@@ -1681,7 +1781,7 @@ export function ManagerApp() {
               <div className="flex h-full flex-col items-center justify-center gap-4 px-8 text-center text-zinc-400">
                 <Keyboard className="h-12 w-12 opacity-40" />
                 <div className="text-2xl font-bold text-white">Selecione ou crie um snippet</div>
-                <p className="max-w-lg text-sm">Escolha um snippet na lista ao lado para editar, ou clique em “Novo Snippet” para criar um.</p>
+                <p className="max-w-lg text-sm">Abra um snippet direto pela sidebar ou clique em “Novo Snippet” para criar um.</p>
               </div>
             )}
           </div>
@@ -1879,12 +1979,22 @@ function CategoryExplorerSidebar({
   onSearchChange,
   sortOrder,
   onSortOrderChange,
+  sidebarSelection,
   currentCategoryId,
   currentCategoryPath,
   categories,
   categoryCounts,
-  onBack,
+  rootSnippets,
+  snippetsByCategoryId,
+  selectedSnippetId,
+  expandedItemIds,
+  onExpandedItemIdsChange,
+  onSelectRoot,
   onOpenCategory,
+  onOpenSnippet,
+  onOpenUncategorized,
+  onSnippetDragStart,
+  onSnippetDragEnd,
   onNewSnippet,
   onManageCategories,
   onOpenSettings,
@@ -1899,12 +2009,22 @@ function CategoryExplorerSidebar({
   onSearchChange: (value: string) => void;
   sortOrder: SortOrder;
   onSortOrderChange: (value: SortOrder) => void;
+  sidebarSelection: SidebarSelection;
   currentCategoryId: string | null;
   currentCategoryPath: string;
-  categories: Category[];
+  categories: CategoryTreeNode[];
   categoryCounts: Map<string, number>;
-  onBack: () => void;
+  rootSnippets: Snippet[];
+  snippetsByCategoryId: Map<string, Snippet[]>;
+  selectedSnippetId: string | null;
+  expandedItemIds: string[];
+  onExpandedItemIdsChange: React.Dispatch<React.SetStateAction<string[]>>;
+  onSelectRoot: () => void;
   onOpenCategory: (categoryId: string) => void;
+  onOpenSnippet: (snippet: Snippet) => void;
+  onOpenUncategorized: () => void;
+  onSnippetDragStart: (snippetId: string) => void;
+  onSnippetDragEnd: () => void;
   onNewSnippet: () => void;
   onManageCategories: () => void;
   onOpenSettings: () => void;
@@ -1915,7 +2035,7 @@ function CategoryExplorerSidebar({
   onSnippetDrop: (categoryId: string) => void;
 }) {
   return (
-    <aside className="flex w-[320px] min-w-[320px] flex-col border-r border-zinc-900 bg-zinc-950/85 backdrop-blur-xl">
+    <aside className="flex h-full min-h-0 w-[340px] min-w-[340px] flex-col border-r border-zinc-900 bg-zinc-950/85 backdrop-blur-xl">
       <div className="border-b border-zinc-900 px-4 py-5">
         <div className="flex items-center gap-3">
           <img src={logo} alt="" className="h-11 w-11 rounded-xl object-contain" />
@@ -1952,51 +2072,102 @@ function CategoryExplorerSidebar({
           <Button
             variant="secondary"
             size="icon-sm"
-            aria-label={currentCategoryId ? 'Voltar para pasta anterior' : 'Pasta raiz'}
-            disabled={!currentCategoryId}
-            onClick={onBack}
+            aria-label="Biblioteca"
+            onClick={onSelectRoot}
           >
-            {currentCategoryId ? <ArrowLeft className="h-4 w-4" /> : <House className="h-4 w-4" />}
+            <House className="h-4 w-4" />
           </Button>
           <div className="min-w-0 flex-1">
-            <div className="text-[10px] font-semibold uppercase tracking-[0.24em] text-zinc-500">Explorador</div>
-            <div className="truncate text-sm font-semibold">{currentCategoryPath || 'Raiz'}</div>
+            <div className="text-[10px] font-semibold uppercase tracking-[0.24em] text-zinc-500">Biblioteca</div>
+            <div className="truncate text-sm font-semibold">{currentCategoryPath || 'Biblioteca'}</div>
           </div>
         </div>
       </div>
 
-      <ScrollArea className="flex-1">
-        <div className="p-3">
-          <div className="mb-3 rounded-2xl border border-zinc-900 bg-zinc-950/70 px-4 py-3">
-            <div className="text-[10px] font-semibold uppercase tracking-[0.24em] text-zinc-500">Categorias</div>
+      <ScrollArea className="flex-1 min-h-0">
+        <div className="space-y-3 p-3">
+          <div className="rounded-2xl border border-zinc-900 bg-zinc-950/70 px-4 py-3">
+            <div className="text-[10px] font-semibold uppercase tracking-[0.24em] text-zinc-500">Explorador</div>
             <div className="mt-1 text-sm text-zinc-400">
-              {categories.length ? 'Arraste snippets para mover entre pastas.' : 'Crie categorias para organizar a biblioteca.'}
+              {categories.length || rootSnippets.length
+                ? 'Expanda categorias e abra snippets direto pela sidebar.'
+                : 'Crie categorias e snippets para começar a organizar a biblioteca.'}
             </div>
           </div>
 
-          {!categories.length ? (
+          <Accordion
+            type="multiple"
+            value={expandedItemIds}
+            onValueChange={onExpandedItemIdsChange}
+            className="space-y-2"
+          >
+            <AccordionItem value="__uncategorized__">
+              <div
+                className={cn(
+                  'rounded-2xl border border-zinc-900 bg-zinc-950/80',
+                  sidebarSelection.type === 'uncategorized' && 'border-amber-500/60 bg-amber-500/10'
+                )}
+              >
+                <AccordionTrigger className="px-3 py-3 hover:no-underline" onClick={onOpenUncategorized}>
+                  <div className="flex min-w-0 flex-1 items-center gap-3 text-left">
+                    <span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-zinc-900 text-amber-400">
+                      <Archive className="h-4 w-4" />
+                    </span>
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-sm font-semibold text-white">Sem categoria</span>
+                      <span className="block text-xs text-zinc-500">
+                        {rootSnippets.length === 1 ? '1 snippet' : `${rootSnippets.length} snippets`}
+                      </span>
+                    </span>
+                  </div>
+                </AccordionTrigger>
+                <AccordionContent className="px-3 pb-3">
+                  {rootSnippets.length ? (
+                    <div className="space-y-2 pl-4">
+                      {rootSnippets.map((snippet) => (
+                        <SidebarSnippetButton
+                          key={snippet.id}
+                          snippet={snippet}
+                          selectedSnippetId={selectedSnippetId}
+                          canDragSnippets={canAcceptSnippetDrop}
+                          onOpenSnippet={onOpenSnippet}
+                          onSnippetDragStart={() => onSnippetDragStart(snippet.id)}
+                          onSnippetDragEnd={onSnippetDragEnd}
+                        />
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="pl-4 text-sm text-zinc-500">Nenhum snippet sem categoria.</div>
+                  )}
+                </AccordionContent>
+              </div>
+            </AccordionItem>
+
+            <SidebarCategoryNodeList
+              nodes={categories}
+              level={0}
+              currentCategoryId={currentCategoryId}
+              categoryCounts={categoryCounts}
+              snippetsByCategoryId={snippetsByCategoryId}
+              selectedSnippetId={selectedSnippetId}
+              canAcceptSnippetDrop={canAcceptSnippetDrop}
+              snippetDropCategoryId={snippetDropCategoryId}
+              onOpenCategory={onOpenCategory}
+              onOpenSnippet={onOpenSnippet}
+              onSnippetDragStart={onSnippetDragStart}
+              onSnippetDragEnd={onSnippetDragEnd}
+              onSnippetDragEnter={onSnippetDragEnter}
+              onSnippetDragLeave={onSnippetDragLeave}
+              onSnippetDrop={onSnippetDrop}
+            />
+          </Accordion>
+
+          {!categories.length && !rootSnippets.length ? (
             <div className="rounded-2xl border border-dashed border-zinc-800 bg-zinc-950/80 px-4 py-8 text-center text-sm text-zinc-500">
               <ClipboardList className="mx-auto mb-3 h-8 w-8 opacity-50" />
-              Nenhuma categoria neste nível.
+              Nenhum snippet ou categoria encontrado.
             </div>
-          ) : (
-            <div className="space-y-2">
-              {categories.map((category) => (
-                <SidebarCategoryCard
-                  key={category.id}
-                  category={category}
-                  onOpen={() => onOpenCategory(category.id)}
-                  isActive={currentCategoryId === category.id}
-                  itemCount={categoryCounts.get(category.id) ?? 0}
-                  isSnippetDropTarget={snippetDropCategoryId === category.id}
-                  canAcceptSnippetDrop={canAcceptSnippetDrop}
-                  onSnippetDragEnter={() => onSnippetDragEnter(category.id)}
-                  onSnippetDragLeave={() => onSnippetDragLeave(category.id)}
-                  onSnippetDrop={() => onSnippetDrop(category.id)}
-                />
-              ))}
-            </div>
-          )}
+          ) : null}
         </div>
       </ScrollArea>
 
@@ -2018,91 +2189,176 @@ function CategoryExplorerSidebar({
   );
 }
 
-function SnippetListPane({
-  search,
-  currentCategoryId,
-  currentCategoryPath,
-  snippets,
+function SidebarSnippetButton({
+  snippet,
   selectedSnippetId,
   onOpenSnippet,
   canDragSnippets,
   onSnippetDragStart,
   onSnippetDragEnd,
 }: {
-  search: string;
-  currentCategoryId: string | null;
-  currentCategoryPath: string;
-  snippets: Snippet[];
+  snippet: Snippet;
   selectedSnippetId: string | null;
   onOpenSnippet: (snippet: Snippet) => void;
   canDragSnippets: boolean;
-  onSnippetDragStart: (snippetId: string) => void;
+  onSnippetDragStart: (() => void) | undefined;
   onSnippetDragEnd: () => void;
 }) {
   return (
-    <div className="min-h-0 border-b border-zinc-900 xl:border-b-0">
-      <ScrollArea className="h-full">
-        <div className="px-5 py-6">
-          <div className="mb-5 flex items-start justify-between gap-4">
-            <div>
-              <div className="text-[10px] font-semibold uppercase tracking-[0.24em] text-zinc-500">
-                {search.trim() ? 'Busca global' : currentCategoryId ? 'Snippets da pasta' : 'Biblioteca'}
-              </div>
-              <div className="mt-1 text-xl font-black tracking-tight text-white">
-                {search.trim() ? `Resultados para "${search}"` : currentCategoryPath || 'Todos os snippets da raiz'}
-              </div>
-            </div>
-            <div className="rounded-full border border-zinc-800 bg-zinc-950/80 px-3 py-1 text-xs text-zinc-400">
-              {snippets.length} {snippets.length === 1 ? 'snippet' : 'snippets'}
-            </div>
+    <button
+      type="button"
+      onClick={() => onOpenSnippet(snippet)}
+      draggable={canDragSnippets}
+      onDragStart={onSnippetDragStart}
+      onDragEnd={onSnippetDragEnd}
+      className={cn(
+        'block w-full rounded-2xl border px-4 py-3 text-left transition-colors',
+        selectedSnippetId === snippet.id
+          ? 'border-amber-500/70 bg-amber-500/10'
+          : 'border-zinc-900 bg-zinc-950/80 hover:border-zinc-700 hover:bg-zinc-900',
+        canDragSnippets && 'cursor-grab active:cursor-grabbing'
+      )}
+    >
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0 flex-1">
+          <div className="font-mono text-xs font-bold text-amber-400">
+            {snippet.favorite ? '★ ' : ''}
+            {formatSnippetTrigger(snippet.trigger)}
           </div>
-
-          {!snippets.length ? (
-            <div className="rounded-3xl border border-dashed border-zinc-800 bg-zinc-950/80 px-6 py-12 text-center text-sm text-zinc-500">
-              <ClipboardList className="mx-auto mb-3 h-8 w-8 opacity-50" />
-              {search.trim()
-                ? 'Nenhum snippet encontrado para a busca atual.'
-                : currentCategoryId
-                  ? 'Esta pasta ainda não possui snippets.'
-                  : 'Nenhum snippet disponível na raiz.'}
-            </div>
-          ) : (
-            <div className="space-y-3">
-              {snippets.map((snippet) => (
-                <button
-                  key={snippet.id}
-                  type="button"
-                  onClick={() => onOpenSnippet(snippet)}
-                  draggable={canDragSnippets}
-                  onDragStart={() => onSnippetDragStart(snippet.id)}
-                  onDragEnd={onSnippetDragEnd}
-                  className={cn(
-                    'block w-full rounded-3xl border px-5 py-4 text-left transition-colors',
-                    selectedSnippetId === snippet.id
-                      ? 'border-amber-500/70 bg-amber-500/10'
-                      : 'border-zinc-900 bg-zinc-950/80 hover:border-zinc-700 hover:bg-zinc-900',
-                    canDragSnippets && 'cursor-grab active:cursor-grabbing'
-                  )}
-                >
-                  <div className="flex items-start justify-between gap-4">
-                    <div className="min-w-0 flex-1">
-                      <div className="font-mono text-sm font-bold text-amber-400">
-                        {snippet.favorite ? '★ ' : ''}
-                        {formatSnippetTrigger(snippet.trigger)}
-                      </div>
-                      <div className="mt-1 truncate text-base font-semibold text-white">{snippet.name}</div>
-                      <div className="mt-2 text-xs text-zinc-500">
-                        {snippet.categoryPath || 'Sem categoria'} · {snippet.usageCount || 0} usos
-                      </div>
-                    </div>
-                    <ChevronRight className="mt-1 h-4 w-4 shrink-0 text-zinc-600" />
-                  </div>
-                </button>
-              ))}
-            </div>
-          )}
+          <div className="mt-1 truncate text-sm font-semibold text-white">{snippet.name}</div>
+          <div className="mt-1 text-xs text-zinc-500">{snippet.usageCount || 0} usos</div>
         </div>
-      </ScrollArea>
+        <ChevronRight className="mt-0.5 h-4 w-4 shrink-0 text-zinc-600" />
+      </div>
+    </button>
+  );
+}
+
+function SidebarCategoryNodeList({
+  nodes,
+  level,
+  currentCategoryId,
+  categoryCounts,
+  snippetsByCategoryId,
+  selectedSnippetId,
+  canAcceptSnippetDrop,
+  snippetDropCategoryId,
+  onOpenCategory,
+  onOpenSnippet,
+  onSnippetDragStart,
+  onSnippetDragEnd,
+  onSnippetDragEnter,
+  onSnippetDragLeave,
+  onSnippetDrop,
+}: {
+  nodes: CategoryTreeNode[];
+  level: number;
+  currentCategoryId: string | null;
+  categoryCounts: Map<string, number>;
+  snippetsByCategoryId: Map<string, Snippet[]>;
+  selectedSnippetId: string | null;
+  canAcceptSnippetDrop: boolean;
+  snippetDropCategoryId: string | null;
+  onOpenCategory: (categoryId: string) => void;
+  onOpenSnippet: (snippet: Snippet) => void;
+  onSnippetDragStart: (snippetId: string) => void;
+  onSnippetDragEnd: () => void;
+  onSnippetDragEnter: (categoryId: string) => void;
+  onSnippetDragLeave: (categoryId: string) => void;
+  onSnippetDrop: (categoryId: string) => void;
+}) {
+  if (!nodes.length) return null;
+
+  return (
+    <div className="space-y-2">
+      {nodes.map((node) => {
+        const Icon = node.category.icon.kind === 'emoji' ? null : getLucideIcon(node.category.icon.value);
+        const snippets = snippetsByCategoryId.get(node.category.id) ?? [];
+        const hasChildren = Boolean(node.children.length || snippets.length);
+
+        return (
+          <AccordionItem key={node.category.id} value={node.category.id}>
+            <div
+              className={cn(
+                'rounded-2xl border border-zinc-900 bg-zinc-950/80',
+                currentCategoryId === node.category.id && 'border-amber-500/60 bg-amber-500/10',
+                snippetDropCategoryId === node.category.id && 'border-amber-500/80 bg-amber-500/15'
+              )}
+              style={{ marginLeft: level * 12 }}
+              onDragOver={
+                canAcceptSnippetDrop
+                  ? (event) => {
+                      event.preventDefault();
+                    }
+                  : undefined
+              }
+              onDragEnter={canAcceptSnippetDrop ? () => onSnippetDragEnter(node.category.id) : undefined}
+              onDragLeave={canAcceptSnippetDrop ? () => onSnippetDragLeave(node.category.id) : undefined}
+              onDrop={
+                canAcceptSnippetDrop
+                  ? (event) => {
+                      event.preventDefault();
+                      onSnippetDrop(node.category.id);
+                    }
+                  : undefined
+              }
+            >
+              <AccordionTrigger
+                className="py-3 hover:no-underline"
+                hideChevron={!hasChildren}
+                onClick={() => onOpenCategory(node.category.id)}
+              >
+                <div className="flex min-w-0 flex-1 items-center gap-3 text-left">
+                  <span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-zinc-900 text-amber-400">
+                    {node.category.icon.kind === 'emoji' ? <span className="text-lg">{node.category.icon.value}</span> : <Icon className="h-4 w-4" />}
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-sm font-semibold text-white">{node.category.name}</span>
+                    <span className="block text-xs text-zinc-500">
+                      {categoryCounts.get(node.category.id) ?? 0} snippets
+                    </span>
+                  </span>
+                </div>
+              </AccordionTrigger>
+
+              {hasChildren ? (
+                <AccordionContent className="px-3 pb-3">
+                  <div className="space-y-2 pl-4">
+                    {snippets.map((snippet) => (
+                      <SidebarSnippetButton
+                        key={snippet.id}
+                        snippet={snippet}
+                        selectedSnippetId={selectedSnippetId}
+                        canDragSnippets={canAcceptSnippetDrop}
+                        onOpenSnippet={onOpenSnippet}
+                        onSnippetDragStart={() => onSnippetDragStart(snippet.id)}
+                        onSnippetDragEnd={onSnippetDragEnd}
+                      />
+                    ))}
+                    <SidebarCategoryNodeList
+                      nodes={node.children}
+                      level={level + 1}
+                      currentCategoryId={currentCategoryId}
+                      categoryCounts={categoryCounts}
+                      snippetsByCategoryId={snippetsByCategoryId}
+                      selectedSnippetId={selectedSnippetId}
+                      canAcceptSnippetDrop={canAcceptSnippetDrop}
+                      snippetDropCategoryId={snippetDropCategoryId}
+                      onOpenCategory={onOpenCategory}
+                      onOpenSnippet={onOpenSnippet}
+                      onSnippetDragStart={onSnippetDragStart}
+                      onSnippetDragEnd={onSnippetDragEnd}
+                      onSnippetDragEnter={onSnippetDragEnter}
+                      onSnippetDragLeave={onSnippetDragLeave}
+                      onSnippetDrop={onSnippetDrop}
+                    />
+                  </div>
+                </AccordionContent>
+              ) : null}
+            </div>
+          </AccordionItem>
+        );
+      })}
     </div>
   );
 }
@@ -2212,97 +2468,6 @@ function SnippetEditorPane({
         </div>
       </div>
     </ScrollArea>
-  );
-}
-
-function SidebarCategoryCard({
-  category,
-  onOpen,
-  isActive = false,
-  itemCount,
-  dragHandleProps,
-  isSnippetDropTarget = false,
-  canAcceptSnippetDrop = false,
-  onSnippetDragEnter,
-  onSnippetDragLeave,
-  onSnippetDrop,
-}: {
-  category: Category;
-  onOpen: () => void;
-  isActive?: boolean;
-  itemCount?: number;
-  dragHandleProps?: React.ButtonHTMLAttributes<HTMLButtonElement>;
-  isSnippetDropTarget?: boolean;
-  canAcceptSnippetDrop?: boolean;
-  onSnippetDragEnter?: () => void;
-  onSnippetDragLeave?: () => void;
-  onSnippetDrop?: () => void;
-}) {
-  const Icon = category.icon.kind === 'emoji' ? null : getLucideIcon(category.icon.value);
-  return (
-    <div
-      role="button"
-      tabIndex={0}
-      className={cn(
-        'group rounded-2xl border transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500/60',
-        isSnippetDropTarget
-          ? 'border-amber-500/70 bg-amber-500/10'
-          : isActive
-            ? 'border-zinc-700 bg-zinc-900'
-            : 'border-zinc-900 bg-zinc-950/80 hover:border-zinc-700 hover:bg-zinc-900'
-      )}
-      onClick={onOpen}
-      onKeyDown={(event) => {
-        if (event.key === 'Enter' || event.key === ' ') {
-          event.preventDefault();
-          onOpen();
-        }
-      }}
-      onDragOver={
-        canAcceptSnippetDrop
-          ? (event) => {
-            event.preventDefault();
-          }
-          : undefined
-      }
-      onDragEnter={canAcceptSnippetDrop ? onSnippetDragEnter : undefined}
-      onDragLeave={canAcceptSnippetDrop ? onSnippetDragLeave : undefined}
-      onDrop={
-        canAcceptSnippetDrop
-          ? (event) => {
-            event.preventDefault();
-            onSnippetDrop?.();
-          }
-          : undefined
-      }
-    >
-      <div className="flex items-center gap-3 px-4 py-3">
-        <span className="grid h-9 w-9 place-items-center rounded-xl bg-zinc-900 text-amber-400">
-          {category.icon.kind === 'emoji' ? <span className="text-lg">{category.icon.value}</span> : <Icon className="h-4 w-4" />}
-        </span>
-        <div className="min-w-0 flex-1">
-          <div className="truncate text-sm font-semibold">{category.name}</div>
-          <div className="mt-0.5 text-xs text-zinc-500">
-            {itemCount === 1 ? '1 snippet' : `${itemCount ?? 0} snippets`}
-          </div>
-        </div>
-        {dragHandleProps ? (
-          <button
-            type="button"
-            aria-label={`Reordenar ${category.name}`}
-            className="drag-handle rounded-xl border border-zinc-800 bg-zinc-900 p-2 text-zinc-400 transition-colors hover:border-zinc-700 hover:text-zinc-200"
-            onClick={(event) => event.stopPropagation()}
-            onKeyDown={(event) => event.stopPropagation()}
-            {...dragHandleProps}
-          >
-            <GripVertical className="h-4 w-4" />
-          </button>
-        ) : null}
-        <span className="rounded-lg p-1 text-zinc-500 transition-colors group-hover:text-zinc-200">
-          <ChevronRight className="h-4 w-4" />
-        </span>
-      </div>
-    </div>
   );
 }
 
