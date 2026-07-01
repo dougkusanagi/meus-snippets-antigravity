@@ -4,7 +4,7 @@ Este projeto segue SemVer e mantem um changelog unico em ordem da release mais r
 
 ## [Unreleased]
 
-## [v0.2.0] - 2026-07-01
+## [v0.1.2] - 2026-07-01
 
 ### Added
 
