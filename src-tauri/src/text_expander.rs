@@ -3,14 +3,26 @@ mod windows_impl {
     use crate::is_shortcut_recording_active;
     use crate::macro_engine;
     use crate::snippet_store::{MacroAction, Snippet, SnippetStore};
+    use std::cell::RefCell;
     use std::collections::HashMap;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Mutex, OnceLock};
     use std::thread;
     use std::time::Duration;
     use tauri::Manager;
-    use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
+    use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, RPC_E_CHANGED_MODE, WPARAM};
+    use windows::Win32::System::Com::{
+        CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED,
+    };
     use windows::Win32::System::Threading::GetCurrentProcessId;
+    use windows::Win32::UI::Accessibility::{
+        CUIAutomation, IUIAutomation, IUIAutomationElement, UIA_ButtonControlTypeId,
+        UIA_ComboBoxControlTypeId, UIA_CustomControlTypeId, UIA_DocumentControlTypeId,
+        UIA_EditControlTypeId, UIA_ListItemControlTypeId, UIA_MenuItemControlTypeId,
+        UIA_RangeValuePatternId, UIA_SliderControlTypeId, UIA_SpinnerControlTypeId,
+        UIA_TextPattern2Id, UIA_TextPatternId, UIA_ValuePatternId, UIA_CONTROLTYPE_ID,
+        UIA_E_NOTSUPPORTED, UIA_PATTERN_ID,
+    };
     use windows::Win32::UI::Input::KeyboardAndMouse::{
         GetKeyboardLayout, GetKeyboardState, MapVirtualKeyW, ToUnicodeEx, MAPVK_VK_TO_CHAR,
         VK_BACK, VK_DELETE, VK_DIVIDE, VK_DOWN, VK_END, VK_ESCAPE, VK_HOME, VK_LEFT, VK_NEXT,
@@ -26,6 +38,10 @@ mod windows_impl {
     const MAX_BUFFER_CHARS: usize = 100;
     const LLKHF_INJECTED: u32 = 0x0000_0010;
     const TO_UNICODE_NO_STATE_CHANGE: u32 = 0x0004;
+
+    thread_local! {
+        static UI_AUTOMATION: RefCell<Option<IUIAutomation>> = const { RefCell::new(None) };
+    }
 
     struct ListenerState {
         buffer: String,
@@ -87,6 +103,24 @@ mod windows_impl {
         expanding: AtomicBool,
     }
 
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum FocusTextContext {
+        TextLike,
+        NonTextLike,
+        Unknown,
+    }
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    struct FocusElementSnapshot {
+        control_type: UIA_CONTROLTYPE_ID,
+        is_keyboard_focusable: bool,
+        has_keyboard_focus: bool,
+        has_text_pattern: bool,
+        has_text_pattern2: bool,
+        has_value_pattern: bool,
+        has_range_value_pattern: bool,
+    }
+
     static RUNTIME: OnceLock<HookRuntime> = OnceLock::new();
 
     fn reset_listener(runtime: &HookRuntime) {
@@ -108,6 +142,8 @@ mod windows_impl {
         }
 
         thread::spawn(move || unsafe {
+            initialize_focus_context_runtime();
+
             let Ok(_hook) = SetWindowsHookExW(WH_KEYBOARD_LL, Some(keyboard_proc), None, 0) else {
                 eprintln!("Failed to install Windows keyboard hook for text expansion");
                 return;
@@ -146,6 +182,7 @@ mod windows_impl {
         if runtime.expanding.load(Ordering::Relaxed)
             || is_shortcut_recording_active()
             || is_own_window_focused()
+            || !should_process_inline_trigger()
         {
             reset_listener(runtime);
             return;
@@ -201,6 +238,126 @@ mod windows_impl {
         }
 
         try_expand_trigger(runtime, trigger);
+    }
+
+    fn initialize_focus_context_runtime() {
+        let com_result = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
+        if !com_result.is_ok() && com_result != RPC_E_CHANGED_MODE {
+            eprintln!(
+                "Failed to initialize COM for Windows focus detection: 0x{:08X}",
+                com_result.0 as u32
+            );
+            return;
+        }
+
+        UI_AUTOMATION.with(|automation| {
+            let mut automation = automation.borrow_mut();
+            if automation.is_some() {
+                return;
+            }
+
+            match unsafe {
+                CoCreateInstance::<_, IUIAutomation>(&CUIAutomation, None, CLSCTX_INPROC_SERVER)
+            } {
+                Ok(instance) => *automation = Some(instance),
+                Err(error) => {
+                    eprintln!(
+                        "Failed to initialize Windows UI Automation for focus detection: {}",
+                        error
+                    );
+                }
+            }
+        });
+    }
+
+    fn should_process_inline_trigger() -> bool {
+        matches!(detect_focus_text_context(), FocusTextContext::TextLike)
+    }
+
+    fn detect_focus_text_context() -> FocusTextContext {
+        UI_AUTOMATION.with(|automation| {
+            let automation = automation.borrow();
+            let Some(automation) = automation.as_ref() else {
+                return FocusTextContext::Unknown;
+            };
+
+            let element = match unsafe { automation.GetFocusedElement() } {
+                Ok(element) => element,
+                Err(_) => return FocusTextContext::Unknown,
+            };
+
+            let snapshot = match snapshot_focus_element(&element) {
+                Ok(snapshot) => snapshot,
+                Err(_) => return FocusTextContext::Unknown,
+            };
+
+            classify_focus_text_context(snapshot)
+        })
+    }
+
+    fn snapshot_focus_element(
+        element: &IUIAutomationElement,
+    ) -> windows::core::Result<FocusElementSnapshot> {
+        Ok(FocusElementSnapshot {
+            control_type: unsafe { element.CurrentControlType()? },
+            is_keyboard_focusable: unsafe { element.CurrentIsKeyboardFocusable()?.as_bool() },
+            has_keyboard_focus: unsafe { element.CurrentHasKeyboardFocus()?.as_bool() },
+            has_text_pattern: has_pattern(element, UIA_TextPatternId)?,
+            has_text_pattern2: has_pattern(element, UIA_TextPattern2Id)?,
+            has_value_pattern: has_pattern(element, UIA_ValuePatternId)?,
+            has_range_value_pattern: has_pattern(element, UIA_RangeValuePatternId)?,
+        })
+    }
+
+    fn has_pattern(
+        element: &IUIAutomationElement,
+        pattern_id: UIA_PATTERN_ID,
+    ) -> windows::core::Result<bool> {
+        match unsafe { element.GetCurrentPattern(pattern_id) } {
+            Ok(_) => Ok(true),
+            Err(error) if error.code().0 as u32 == UIA_E_NOTSUPPORTED => Ok(false),
+            Err(error) => Err(error),
+        }
+    }
+
+    fn classify_focus_text_context(snapshot: FocusElementSnapshot) -> FocusTextContext {
+        if !snapshot.is_keyboard_focusable || !snapshot.has_keyboard_focus {
+            return FocusTextContext::NonTextLike;
+        }
+
+        if snapshot.has_range_value_pattern {
+            return FocusTextContext::NonTextLike;
+        }
+
+        if matches!(
+            snapshot.control_type,
+            value if value == UIA_ButtonControlTypeId
+                || value == UIA_SpinnerControlTypeId
+                || value == UIA_SliderControlTypeId
+                || value == UIA_ComboBoxControlTypeId
+                || value == UIA_ListItemControlTypeId
+                || value == UIA_MenuItemControlTypeId
+        ) {
+            return FocusTextContext::NonTextLike;
+        }
+
+        if matches!(
+            snapshot.control_type,
+            value if value == UIA_EditControlTypeId || value == UIA_DocumentControlTypeId
+        ) {
+            return FocusTextContext::TextLike;
+        }
+
+        if snapshot.control_type == UIA_CustomControlTypeId {
+            if snapshot.has_text_pattern || snapshot.has_text_pattern2 {
+                return FocusTextContext::TextLike;
+            }
+
+            return FocusTextContext::Unknown;
+        }
+
+        let _ = snapshot.has_value_pattern;
+        FocusTextContext::Unknown
     }
 
     fn try_expand_trigger(runtime: &HookRuntime, typed_trigger: String) {
@@ -363,7 +520,24 @@ mod windows_impl {
 
     #[cfg(test)]
     mod tests {
-        use super::{normalize_inline_trigger, ListenerState};
+        use super::{
+            classify_focus_text_context, normalize_inline_trigger, FocusElementSnapshot,
+            FocusTextContext, ListenerState, UIA_CustomControlTypeId, UIA_DocumentControlTypeId,
+            UIA_EditControlTypeId, UIA_SliderControlTypeId, UIA_SpinnerControlTypeId,
+            UIA_CONTROLTYPE_ID,
+        };
+
+        fn snapshot(control_type: UIA_CONTROLTYPE_ID) -> FocusElementSnapshot {
+            FocusElementSnapshot {
+                control_type,
+                is_keyboard_focusable: true,
+                has_keyboard_focus: true,
+                has_text_pattern: false,
+                has_text_pattern2: false,
+                has_value_pattern: false,
+                has_range_value_pattern: false,
+            }
+        }
 
         #[test]
         fn starts_tracking_only_after_prefix() {
@@ -415,6 +589,65 @@ mod windows_impl {
         fn normalizes_prefixed_trigger_before_lookup() {
             assert_eq!(normalize_inline_trigger("/1"), "1");
             assert_eq!(normalize_inline_trigger("/email"), "email");
+        }
+
+        #[test]
+        fn allows_edit_control_without_range_value() {
+            assert_eq!(
+                classify_focus_text_context(snapshot(UIA_EditControlTypeId)),
+                FocusTextContext::TextLike
+            );
+        }
+
+        #[test]
+        fn allows_document_control() {
+            assert_eq!(
+                classify_focus_text_context(snapshot(UIA_DocumentControlTypeId)),
+                FocusTextContext::TextLike
+            );
+        }
+
+        #[test]
+        fn blocks_spinner_control() {
+            assert_eq!(
+                classify_focus_text_context(snapshot(UIA_SpinnerControlTypeId)),
+                FocusTextContext::NonTextLike
+            );
+        }
+
+        #[test]
+        fn blocks_slider_control() {
+            assert_eq!(
+                classify_focus_text_context(snapshot(UIA_SliderControlTypeId)),
+                FocusTextContext::NonTextLike
+            );
+        }
+
+        #[test]
+        fn blocks_custom_control_without_text_pattern() {
+            assert_eq!(
+                classify_focus_text_context(snapshot(UIA_CustomControlTypeId)),
+                FocusTextContext::Unknown
+            );
+        }
+
+        #[test]
+        fn blocks_unknown_context() {
+            let snapshot = snapshot(UIA_CONTROLTYPE_ID(0));
+            assert_eq!(
+                classify_focus_text_context(snapshot),
+                FocusTextContext::Unknown
+            );
+        }
+
+        #[test]
+        fn blocks_edit_control_when_range_value_pattern_present() {
+            let mut snapshot = snapshot(UIA_EditControlTypeId);
+            snapshot.has_range_value_pattern = true;
+            assert_eq!(
+                classify_focus_text_context(snapshot),
+                FocusTextContext::NonTextLike
+            );
         }
     }
 }

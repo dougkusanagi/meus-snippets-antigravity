@@ -9,6 +9,10 @@ Este projeto segue SemVer e mantem um changelog unico em ordem da release mais r
 - Fluxo de build local passou a carregar automaticamente a chave de assinatura do updater de `keys/updater.key` ao executar `bun run tauri build`.
 - Chave de assinatura do updater rotacionada para gerar novas builds locais com artefatos assinados.
 
+### Fixed
+
+- Expansao inline no Windows passou a validar o tipo do controle focado antes de rastrear gatilhos com `/`, evitando disparos indevidos em contextos numericos ou nao-textuais como Calculadora, sliders, spinners e campos matematicos especializados.
+
 ## [v0.1.1] - 2026-06-30
 
 ### Added
