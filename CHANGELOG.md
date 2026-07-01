@@ -4,10 +4,20 @@ Este projeto segue SemVer e mantem um changelog unico em ordem da release mais r
 
 ## [Unreleased]
 
+## [v0.2.0] - 2026-07-01
+
+### Added
+
+- Expansao inline no Windows agora valida o contexto de foco antes de aceitar gatilhos com `/`, permitindo apenas controles claramente textuais.
+
 ### Changed
 
 - Fluxo de build local passou a carregar automaticamente a chave de assinatura do updater de `keys/updater.key` ao executar `bun run tauri build`.
 - Chave de assinatura do updater rotacionada para gerar novas builds locais com artefatos assinados.
+
+### Fixed
+
+- Expansao inline no Windows deixou de disparar em controles numericos e nao-textuais como Calculadora, sliders, spinners e outros contextos sem evidencia confiavel de texto livre.
 
 ## [v0.1.1] - 2026-06-30
 

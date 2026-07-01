@@ -1,6 +1,6 @@
 [package]
 name = "guepardosys-snip"
-version = "0.1.1"
+version = "0.2.0"
 description = "Cross-platform snippet/macro expander"
 authors = ["guepardosys"]
 edition = "2021"
@@ -36,7 +36,9 @@ gtk = "0.18"
 [target.'cfg(target_os = "windows")'.dependencies]
 windows = { version = "0.58", features = [
   "Win32_Foundation",
+  "Win32_System_Com",
   "Win32_UI_Input_KeyboardAndMouse",
+  "Win32_UI_Accessibility",
   "Win32_UI_WindowsAndMessaging",
   "Win32_System_Threading",
 ] }
