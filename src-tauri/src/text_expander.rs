@@ -271,7 +271,11 @@ mod windows_impl {
     }
 
     fn should_process_inline_trigger() -> bool {
-        matches!(detect_focus_text_context(), FocusTextContext::TextLike)
+        should_allow_focus_text_context(detect_focus_text_context())
+    }
+
+    fn should_allow_focus_text_context(context: FocusTextContext) -> bool {
+        !matches!(context, FocusTextContext::NonTextLike)
     }
 
     fn detect_focus_text_context() -> FocusTextContext {
@@ -348,15 +352,14 @@ mod windows_impl {
             return FocusTextContext::TextLike;
         }
 
-        if snapshot.control_type == UIA_CustomControlTypeId {
-            if snapshot.has_text_pattern || snapshot.has_text_pattern2 {
-                return FocusTextContext::TextLike;
-            }
+        if snapshot.has_text_pattern || snapshot.has_text_pattern2 || snapshot.has_value_pattern {
+            return FocusTextContext::TextLike;
+        }
 
+        if snapshot.control_type == UIA_CustomControlTypeId {
             return FocusTextContext::Unknown;
         }
 
-        let _ = snapshot.has_value_pattern;
         FocusTextContext::Unknown
     }
 
@@ -521,10 +524,10 @@ mod windows_impl {
     #[cfg(test)]
     mod tests {
         use super::{
-            classify_focus_text_context, normalize_inline_trigger, FocusElementSnapshot,
-            FocusTextContext, ListenerState, UIA_CustomControlTypeId, UIA_DocumentControlTypeId,
-            UIA_EditControlTypeId, UIA_SliderControlTypeId, UIA_SpinnerControlTypeId,
-            UIA_CONTROLTYPE_ID,
+            classify_focus_text_context, normalize_inline_trigger, should_allow_focus_text_context,
+            FocusElementSnapshot, FocusTextContext, ListenerState, UIA_CustomControlTypeId,
+            UIA_DocumentControlTypeId, UIA_EditControlTypeId, UIA_SliderControlTypeId,
+            UIA_SpinnerControlTypeId, UIA_CONTROLTYPE_ID,
         };
 
         fn snapshot(control_type: UIA_CONTROLTYPE_ID) -> FocusElementSnapshot {
@@ -641,12 +644,27 @@ mod windows_impl {
         }
 
         #[test]
+        fn allows_unknown_context_as_fallback() {
+            assert!(should_allow_focus_text_context(FocusTextContext::Unknown));
+        }
+
+        #[test]
         fn blocks_edit_control_when_range_value_pattern_present() {
             let mut snapshot = snapshot(UIA_EditControlTypeId);
             snapshot.has_range_value_pattern = true;
             assert_eq!(
                 classify_focus_text_context(snapshot),
                 FocusTextContext::NonTextLike
+            );
+        }
+
+        #[test]
+        fn allows_value_pattern_on_unknown_control() {
+            let mut snapshot = snapshot(UIA_CONTROLTYPE_ID(0));
+            snapshot.has_value_pattern = true;
+            assert_eq!(
+                classify_focus_text_context(snapshot),
+                FocusTextContext::TextLike
             );
         }
     }
