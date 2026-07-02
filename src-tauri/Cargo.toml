@@ -1,6 +1,6 @@
 [package]
 name = "guepardosys-snip"
-version = "0.1.2"
+version = "0.1.3"
 description = "Cross-platform snippet/macro expander"
 authors = ["guepardosys"]
 edition = "2021"

@@ -4,6 +4,8 @@ Este projeto segue SemVer e mantem um changelog unico em ordem da release mais r
 
 ## [Unreleased]
 
+## [v0.1.3] - 2026-07-02
+
 ### Fixed
 
 - Expansao inline no Windows voltou a aceitar campos com foco inconclusivo ou expostos apenas com `ValuePattern`, bloqueando apenas controles explicitamente nao textuais ao avaliar gatilhos com `/`.
